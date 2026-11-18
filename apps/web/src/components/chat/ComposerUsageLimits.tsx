@@ -126,6 +126,57 @@ export function modelFallbackBannerItem(
   };
 }
 
+export function limitSwitchBannerItem(
+  {
+    fromName,
+    toName,
+    resetsAt,
+    automatic,
+    timestampFormat,
+    onSwitch,
+    onDismiss,
+  }: {
+    readonly fromName: string;
+    readonly toName: string;
+    readonly resetsAt: string | null;
+    /** The server moves the next message itself; otherwise offer the switch. */
+    readonly automatic: boolean;
+    readonly timestampFormat: TimestampFormat;
+    readonly onSwitch: () => void;
+    readonly onDismiss: () => void;
+  },
+  resolve: MessageResolver = m,
+): ComposerBannerStackItem {
+  const outOfUsage = resetsAt
+    ? resolve(
+        msg("{provider} is out of usage · resets {time}", {
+          provider: fromName,
+          time: formatUpcomingTimestamp(resetsAt, timestampFormat, Date.now(), undefined, resolve),
+        }),
+      )
+    : resolve(msg("{provider} is out of usage", { provider: fromName }));
+  return {
+    id: "limit-switch",
+    variant: "info",
+    icon: <GaugeIcon />,
+    ...(automatic
+      ? {
+          title: resolve(msg("Next message runs on {account}", { account: toName })),
+          description: outOfUsage,
+        }
+      : {
+          title: outOfUsage,
+          actions: (
+            <Button size="xs" variant="ghost" onClick={onSwitch}>
+              {resolve(msg("Switch to {account}", { account: toName }))}
+            </Button>
+          ),
+        }),
+    dismissLabel: resolve(msg("Dismiss usage limit notice")),
+    onDismiss,
+  };
+}
+
 function UsageLimitsBannerBody({
   report,
   environmentId,

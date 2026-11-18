@@ -34,6 +34,8 @@ type RecoveryProps = {
   snoozedUntil: string | null;
   recovery: OrchestrationV2LimitRecovery | null;
   timestampFormat: TimestampFormat;
+  /** Set while account switching is on and no other account of this provider has usage left. */
+  noSwitchProvider?: string;
   onChange: (recovery: OrchestrationV2LimitRecoveryUpdate) => Promise<void>;
 };
 
@@ -51,6 +53,7 @@ export function usageLimitRecoveryBannerItem(
     recovery,
     snoozedUntil,
     timestampFormat,
+    noSwitchProvider,
   } = props;
   // The server refuses recovery changes while a request is pending.
   const canSchedule =
@@ -98,7 +101,10 @@ export function usageLimitRecoveryBannerItem(
       group: "environment",
       icon: <GaugeIcon />,
       title: resolve(msg("Usage limit reached")),
-      description: resetDescription,
+      description:
+        noSwitchProvider === undefined
+          ? resetDescription
+          : `${resetDescription} · ${resolve(msg("no other {provider} account has usage left", { provider: noSwitchProvider }))}`,
       actions: recoveryActions,
     };
   }

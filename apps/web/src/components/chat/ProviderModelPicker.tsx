@@ -17,6 +17,8 @@ import {
   useRef,
   useState,
 } from "react";
+import { exhaustedUsageWindow } from "@t3tools/shared/usageLimits";
+import { useNowMinute } from "../../hooks/useNowMinute";
 import { Badge } from "../ui/badge";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -156,6 +158,7 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
   const isCoarsePointer = useMediaQuery({ pointer: "coarse" });
   const size = props.size ?? "sm";
   const docked = props.effortColumn !== undefined;
+  const nowMs = Date.parse(`${useNowMinute()}:00Z`);
 
   const activeEntry =
     props.instanceEntries.find((entry) => entry.instanceId === props.activeInstanceId) ?? null;
@@ -444,6 +447,13 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
           {selectedModel?.isUnavailable && !selectedEntries && props.triggerLabel === undefined ? (
             <Badge variant="outline" size="sm">
               <T context="badge on a model that cannot be selected">Unavailable</T>
+            </Badge>
+          ) : activeEntry &&
+            !selectedEntries &&
+            props.triggerLabel === undefined &&
+            exhaustedUsageWindow(activeEntry.snapshot, nowMs, props.model) ? (
+            <Badge variant="outline" size="sm">
+              <T context="badge on the selected account when its usage is used up">Out of usage</T>
             </Badge>
           ) : null}
         </span>

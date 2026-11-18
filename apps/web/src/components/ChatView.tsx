@@ -4,7 +4,12 @@ import { useGT, useMessages } from "gt-react";
 import { ChildThreadApprovals } from "./chat/ChildThreadApprovals";
 import { workspaceAreaProps } from "../lib/workspaceFocus";
 import { sourceControlClients } from "@t3tools/client-runtime/source-control-clients";
-import { resolveNewThreadModelSelection } from "@t3tools/shared/usageLimits";
+import {
+  resolveLimitSwitchForNewTurn,
+  resolveLimitSwitchSelection,
+  resolveNewThreadModelSelection,
+} from "@t3tools/shared/usageLimits";
+import { resolveProviderInstanceDisplayName } from "@t3tools/client-runtime/state/provider-instance-display";
 import { queuedRunEditBlockedReason } from "@t3tools/client-runtime/queued-run-edit";
 import { ScrollToEndButton, WorkspaceFileDropOverlay } from "./chat/TimelineOverlays";
 import { usePasteToFocusComposer } from "./chat/usePasteToFocusComposer";
@@ -73,6 +78,7 @@ import {
   type MessageId,
   type ModelSelection,
   type PreviewAnnotationPayload,
+  PROVIDER_DISPLAY_NAMES,
   ProviderInstanceId,
   type ServerProvider,
   type ScopedThreadRef,
@@ -340,7 +346,7 @@ import { useProactivePanels } from "../hooks/useProactivePanels";
 import { useIncrementalTimelineEntries } from "../hooks/useIncrementalTimelineEntries";
 import { useRightPanelSurfaceClose } from "../hooks/useRightPanelSurfaceClose";
 import { ComposerBannerStack, type ComposerBannerStackItem } from "./chat/ComposerBannerStack";
-import { modelFallbackBannerItem } from "./chat/ComposerUsageLimits";
+import { limitSwitchBannerItem, modelFallbackBannerItem } from "./chat/ComposerUsageLimits";
 import { ComposerSurface } from "./chat/ComposerSurface";
 import { resolveThreadSyncPhase } from "../threadSync";
 import { hasAvailableCompactionProvider } from "./chat/compaction.logic";
@@ -2605,6 +2611,23 @@ export default function ChatView(props: ChatViewProps) {
     );
     return item ? [item] : [];
   });
+  const limitedProvider = providerStatuses.find(
+    (provider) => provider.instanceId === activeThread?.modelSelection.instanceId,
+  );
+  const noSwitchProvider =
+    settings.switchAccountsAtUsageLimits &&
+    limitRecoveryRun !== null &&
+    activeThread &&
+    limitedProvider &&
+    resolveLimitSwitchSelection({
+      selection: activeThread.modelSelection,
+      providers: providerStatuses,
+      settings,
+      projectId: activeThread.projectId,
+      now: Date.parse(`${nowMinute}:00Z`),
+    }) === null
+      ? (PROVIDER_DISPLAY_NAMES[limitedProvider.driver] ?? limitedProvider.driver)
+      : undefined;
   const limitRecoveryBanner =
     limitRecoveryRun !== null && activeThreadShell !== null
       ? usageLimitRecoveryBannerItem(
@@ -2618,6 +2641,7 @@ export default function ChatView(props: ChatViewProps) {
             recovery: activeThreadShell.limitRecovery ?? null,
             snoozedUntil: activeThreadShell.snoozedUntil,
             timestampFormat,
+            ...(noSwitchProvider === undefined ? {} : { noSwitchProvider }),
             onChange: async (limitRecovery) => {
               const result = await updateThreadMetadata({
                 environmentId,
@@ -2678,6 +2702,50 @@ export default function ChatView(props: ChatViewProps) {
             ),
           ]
         : [];
+    const limitSwitchFrom = composerSelectedModelSelection ?? activeThread?.modelSelection ?? null;
+    const limitSwitch =
+      // The server moves only a turn that starts while nothing runs.
+      limitSwitchFrom &&
+      phase === "ready" &&
+      multipleModelSelections === null &&
+      fallbackItems.length === 0
+        ? resolveLimitSwitchForNewTurn({
+            selection: limitSwitchFrom,
+            providers: providerStatuses,
+            settings,
+            projectId: activeThread?.projectId ?? draftThread?.projectId ?? null,
+            now: Date.parse(`${nowMinute}:00Z`),
+          })
+        : null;
+    const limitSwitchWindow =
+      limitSwitch && limitSwitchFrom
+        ? `${limitSwitchFrom.instanceId}:${limitSwitch.resetsAt ?? ""}`
+        : null;
+    const accountName = (instanceId: string) => {
+      const provider = providerStatuses.find((entry) => entry.instanceId === instanceId);
+      return provider ? resolveProviderInstanceDisplayName(provider) : instanceId;
+    };
+    const limitSwitchItems: ComposerBannerStackItem[] =
+      limitSwitch && limitSwitchFrom && limitSwitchWindow !== dismissedFallbackWindow
+        ? [
+            limitSwitchBannerItem(
+              {
+                fromName: accountName(limitSwitchFrom.instanceId),
+                toName: accountName(limitSwitch.selection.instanceId),
+                resetsAt: limitSwitch.resetsAt,
+                automatic: settings.switchAccountsAtUsageLimits,
+                timestampFormat,
+                onSwitch: () =>
+                  onProviderModelSelectStable(
+                    limitSwitch.selection.instanceId,
+                    limitSwitch.selection.model,
+                  ),
+                onDismiss: () => setDismissedFallbackWindow(limitSwitchWindow),
+              },
+              messages,
+            ),
+          ]
+        : [];
     const limitRecoveryItems = limitRecoveryBanner === null ? [] : [limitRecoveryBanner];
     const extensionStatusBanner = extensionStatusBannerItem(
       deriveProviderExtensionStatuses(serverProjection),
@@ -2694,6 +2762,7 @@ export default function ChatView(props: ChatViewProps) {
       return [
         ...feedbackBannerItems,
         ...fallbackItems,
+        ...limitSwitchItems,
         ...limitRecoveryItems,
         ...extensionStatusItems,
         ...usageLimitsItems,
@@ -2705,6 +2774,7 @@ export default function ChatView(props: ChatViewProps) {
     return [
       ...feedbackBannerItems,
       ...fallbackItems,
+      ...limitSwitchItems,
       ...limitRecoveryItems,
       ...extensionStatusItems,
       ...usageLimitsItems,

@@ -6,6 +6,8 @@ import { StarIcon } from "lucide-react";
 import { ProviderInstanceIcon } from "./ProviderInstanceIcon";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { cn } from "~/lib/utils";
+import { exhaustedAccountWindow } from "@t3tools/shared/usageLimits";
+import { useNowMinute } from "../../hooks/useNowMinute";
 import type { MessageResolver } from "../../i18n/messages";
 import {
   isProviderInstancePickerReady,
@@ -58,6 +60,7 @@ export const ModelPickerSidebar = memo(function ModelPickerSidebar(props: {
   getDisabledInstanceTooltip?: (entry: ProviderInstanceEntry) => string;
 }) {
   const m = useMessages();
+  const nowMs = Date.parse(`${useNowMinute()}:00Z`);
   const handleSelect = (instanceId: ProviderInstanceId | "favorites") => {
     props.onSelectInstance(instanceId);
   };
@@ -152,12 +155,15 @@ export const ModelPickerSidebar = memo(function ModelPickerSidebar(props: {
             const isSelected = props.selectedInstanceId === entry.instanceId;
             const isHovered = hoveredInstanceId === entry.instanceId;
             const showInstanceBadge = shouldShowInstanceBadge(entry, props.instanceEntries);
+            const outOfUsage = exhaustedAccountWindow(entry.snapshot, nowMs) !== undefined;
 
             const tooltip = isUnavailable
               ? describeUnavailableInstance(entry, m)
               : isContextDisabled
                 ? (props.getDisabledInstanceTooltip?.(entry) ?? entry.displayName)
-                : entry.displayName;
+                : outOfUsage
+                  ? m(msg("{label}: Out of usage.", { label: entry.displayName }))
+                  : entry.displayName;
 
             const button = (
               <Toolbar.Button
@@ -179,7 +185,9 @@ export const ModelPickerSidebar = memo(function ModelPickerSidebar(props: {
                 focusableWhenDisabled={!isDisabled}
                 aria-pressed={isSelected}
                 type="button"
-                aria-label={isUnavailable || isContextDisabled ? tooltip : entry.displayName}
+                aria-label={
+                  isUnavailable || isContextDisabled || outOfUsage ? tooltip : entry.displayName
+                }
               >
                 <ProviderInstanceIcon
                   driverKind={entry.driverKind}
@@ -199,6 +207,12 @@ export const ModelPickerSidebar = memo(function ModelPickerSidebar(props: {
                   }
                   {...(entry.accentColor ? { badgeClassName: "h-3 min-w-3 px-0.5 text-5xs" } : {})}
                 />
+                {outOfUsage ? (
+                  <span
+                    aria-hidden
+                    className="pointer-events-none absolute top-1 right-1 z-40 size-1.5 rounded-full bg-warning ring-2 ring-background"
+                  />
+                ) : null}
               </Toolbar.Button>
             );
 

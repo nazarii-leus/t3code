@@ -14,6 +14,8 @@ import {
   LockIcon,
   LockOpenIcon,
 } from "lucide-react";
+import { exhaustedAccountWindow } from "@t3tools/shared/usageLimits";
+import { useNowMinute } from "../../hooks/useNowMinute";
 import * as Arr from "effect/Array";
 import * as Result from "effect/Result";
 import { Fragment, useState, type ReactElement, type ReactNode } from "react";
@@ -812,6 +814,11 @@ export function ProviderInstanceCard({
   const m = useMessages();
   const enabled = projectOverride?.effectiveEnabled ?? resolveProviderInstanceEnabled(instance);
   const effectiveProvider = liveProvider && { ...liveProvider, enabled };
+  const nowMinute = useNowMinute();
+  const outOfUsage =
+    enabled &&
+    liveProvider !== undefined &&
+    exhaustedAccountWindow(liveProvider, Date.parse(`${nowMinute}:00Z`)) !== undefined;
   const compatibility = enabled ? liveProvider?.compatibilityAdvisory : undefined;
   const statusKey = enabled ? getProviderStatusKey(effectiveProvider) : "disabled";
   const statusStyle = PROVIDER_STATUS_STYLES[statusKey];
@@ -1219,6 +1226,7 @@ export function ProviderInstanceCard({
                     <>
                       {summary.headline}
                       {needsAttention && inlineStatusDetail ? ` · ${inlineStatusDetail}` : null}
+                      {outOfUsage ? ` · ${gt("Out of usage")}` : null}
                     </>
                   )}
                 </span>

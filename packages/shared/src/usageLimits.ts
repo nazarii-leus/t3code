@@ -76,6 +76,12 @@ export function exhaustedUsageWindow(
   }
 }
 
+/** The used-up window that stops an account's default model; markers that name no model use it. */
+export function exhaustedAccountWindow(provider: ServerProvider, now: number) {
+  const model = provider.models.find((entry) => entry.isDefault)?.slug ?? provider.models[0]?.slug;
+  return model === undefined ? undefined : exhaustedUsageWindow(provider, now, model);
+}
+
 export function resolveNewThreadModelSelection(input: {
   readonly defaultSelection: ModelSelection | null;
   readonly explicitSelection?: ModelSelection | null;
@@ -133,15 +139,27 @@ export function limitSwitchAccountGroups(
   return [...groups.values()].filter((accounts) => accounts.length > 1);
 }
 
-/** Another account of the same provider that can take a thread over when its own runs out of usage. */
-export function resolveLimitSwitchSelection(input: {
+type LimitSwitchInput = {
   readonly selection: ModelSelection;
   readonly providers: readonly ServerProvider[];
   readonly settings: Pick<ServerSettings, "providerInstances" | "projectSettingsOverrides">;
-  readonly projectId: ProjectId;
+  readonly projectId: ProjectId | null;
   readonly now: number;
   readonly excludedInstanceIds?: ReadonlyArray<ProviderInstanceId>;
-}): ModelSelection | null {
+};
+
+/** Where a new turn on an account that is out of usage starts instead, and when that account resets. */
+export function resolveLimitSwitchForNewTurn(input: LimitSwitchInput) {
+  const current = input.providers.find(
+    (provider) => provider.instanceId === input.selection.instanceId,
+  );
+  const window = exhaustedUsageWindow(current, input.now, input.selection.model);
+  const selection = window ? resolveLimitSwitchSelection(input) : null;
+  return selection && window ? { selection, resetsAt: window.resetsAt ?? null } : null;
+}
+
+/** Another account of the same provider that can take a thread over when its own runs out of usage. */
+export function resolveLimitSwitchSelection(input: LimitSwitchInput): ModelSelection | null {
   const current = input.providers.find(
     (provider) => provider.instanceId === input.selection.instanceId,
   );

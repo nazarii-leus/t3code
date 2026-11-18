@@ -25,6 +25,7 @@ import {
   paceRemainingPercent,
   usesChatGptSharing,
   limitSwitchAccountGroups,
+  resolveLimitSwitchForNewTurn,
   resolveLimitSwitchSelection,
   resolveNewThreadModelSelection,
 } from "./usageLimits.ts";
@@ -286,6 +287,17 @@ describe("limit account switch", () => {
       },
     };
     expect(resolve([roomy], { settings: projectOff })).toBeNull();
+  });
+
+  it("moves a new turn only off an account that is out of usage, keeping its reset", () => {
+    const input = { selection, settings, projectId, now };
+    expect(resolveLimitSwitchForNewTurn({ ...input, providers: [limited, roomy] })).toEqual({
+      selection: { ...selection, instanceId: roomy.instanceId },
+      resetsAt: window.resetsAt,
+    });
+    expect(
+      resolveLimitSwitchForNewTurn({ ...input, providers: [account("codex", 50), roomy] }),
+    ).toBeNull();
   });
 
   it("groups the accounts each provider can switch between", () => {

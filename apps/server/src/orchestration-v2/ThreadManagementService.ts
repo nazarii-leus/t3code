@@ -45,7 +45,7 @@ import {
 } from "@t3tools/contracts";
 import { delegatedTaskProgress } from "@t3tools/provider-core/server/subagentProjection";
 import { threadTranscriptHeader } from "@t3tools/shared/threadTranscript";
-import { exhaustedUsageWindow, resolveLimitSwitchSelection } from "@t3tools/shared/usageLimits";
+import { resolveLimitSwitchForNewTurn } from "@t3tools/shared/usageLimits";
 import { AgentScope } from "@t3tools/shared/AgentScope";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -838,24 +838,20 @@ const make = Effect.gen(function* () {
     });
     if (runs.length > 0) return command;
     const selection = command.modelSelection ?? thread.modelSelection;
-    const providers = yield* providerRegistry.value.getProviders;
-    const now = DateTime.toEpochMillis(yield* DateTime.now);
-    const current = providers.find((provider) => provider.instanceId === selection.instanceId);
-    if (!exhaustedUsageWindow(current, now, selection.model)) return command;
-    const switched = resolveLimitSwitchSelection({
+    const switched = resolveLimitSwitchForNewTurn({
       selection,
-      providers,
+      providers: yield* providerRegistry.value.getProviders,
       settings,
       projectId: thread.projectId,
-      now,
+      now: DateTime.toEpochMillis(yield* DateTime.now),
     });
     if (switched === null) return command;
     yield* Effect.logInfo("orchestration-v2.limit-switch.rerouted", {
       threadId: command.threadId,
       from: selection.instanceId,
-      to: switched.instanceId,
+      to: switched.selection.instanceId,
     });
-    return { ...command, modelSelection: switched };
+    return { ...command, modelSelection: switched.selection };
   });
 
   const dispatch: ThreadManagementServiceShape["dispatch"] = (command) =>

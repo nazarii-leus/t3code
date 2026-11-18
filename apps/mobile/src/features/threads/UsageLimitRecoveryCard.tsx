@@ -3,13 +3,15 @@ import { errorDisplayMessage } from "@t3tools/client-runtime/errors";
 import { AsyncResult } from "effect/reactivity";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import { limitRecoveryOwnsSnooze } from "@t3tools/client-runtime/state/thread-execution";
-import type { EnvironmentId } from "@t3tools/contracts";
+import { type EnvironmentId, PROVIDER_DISPLAY_NAMES } from "@t3tools/contracts";
 import {
   CHATGPT_USAGE_LIMIT_CODE,
   CHATGPT_USAGE_URL,
   CHATGPT_WORKSPACE_ADMIN_REQUEST,
   CHATGPT_WORKSPACE_USAGE_LIMIT_CODE,
+  resolveLimitSwitchSelection,
 } from "@t3tools/shared/usageLimits";
+import { useAtomValue } from "@effect/atom-react";
 import * as Clipboard from "expo-clipboard";
 import { T, useGT } from "gt-react-native";
 import { m } from "../../i18n/messages";
@@ -17,7 +19,8 @@ import { useState } from "react";
 import { Linking, Pressable, View } from "react-native";
 import { ProviderIcon } from "../../components/ProviderIcon";
 import { AppText as Text } from "../../components/ui/AppText";
-import { useDeadlinePassed } from "../../lib/clock";
+import { useDeadlinePassed, useNowMinuteMs } from "../../lib/clock";
+import { serverEnvironment } from "../../state/server";
 import { threadEnvironment } from "../../state/threads";
 import { useAtomCommand } from "../../state/use-atom-command";
 
@@ -32,6 +35,24 @@ export function UsageLimitRecoveryCard({
   const updateMetadata = useAtomCommand(threadEnvironment.updateMetadata);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const nowMs = useNowMinuteMs();
+  const providers = useAtomValue(serverEnvironment.providersValueAtom(environmentId)) ?? [];
+  const settings = useAtomValue(serverEnvironment.settingsValueAtom(environmentId));
+  const limitedProvider = providers.find(
+    (provider) => provider.instanceId === thread.modelSelection.instanceId,
+  );
+  const noSwitchProvider =
+    settings?.switchAccountsAtUsageLimits &&
+    limitedProvider &&
+    resolveLimitSwitchSelection({
+      selection: thread.modelSelection,
+      providers,
+      settings,
+      projectId: thread.projectId,
+      now: nowMs,
+    }) === null
+      ? (PROVIDER_DISPLAY_NAMES[limitedProvider.driver] ?? limitedProvider.driver)
+      : undefined;
   const resetAt = thread.runtime?.usageLimitResetAt ?? null;
   const canSchedule =
     thread.settledOverride !== "settled" &&
@@ -175,6 +196,9 @@ export function UsageLimitRecoveryCard({
                 : gt(
                     "Usage limit reached. The provider did not report a reset time. Retry manually when your limit is available.",
                   )}
+          {!chatGptLimit && noSwitchProvider !== undefined
+            ? ` ${gt("No other {provider} account has usage left.", { provider: noSwitchProvider })}`
+            : null}
         </Text>
         {chatGptLimit || canSchedule ? (
           // The margins cancel the 44pt touch height so the links sit 8pt under the text.

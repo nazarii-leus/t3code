@@ -34,6 +34,10 @@ vi.mock("../../components/ui/Button", () => ({
   ),
 }));
 vi.mock("../../state/threads", () => ({ threadEnvironment: { updateMetadata: {} } }));
+vi.mock("../../state/server", () => ({
+  serverEnvironment: { providersValueAtom: () => null, settingsValueAtom: () => null },
+}));
+vi.mock("@effect/atom-react", () => ({ useAtomValue: () => undefined }));
 vi.mock("../../state/use-atom-command", () => ({ useAtomCommand: () => vi.fn() }));
 
 import { UsageLimitRecoveryCard } from "./UsageLimitRecoveryCard";
