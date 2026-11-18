@@ -470,6 +470,12 @@ export const SETTINGS_SEARCH_ITEMS = [
     scope: "environment-defaults",
   },
   {
+    id: "switch-accounts-at-usage-limits",
+    title: msg("Switch accounts at usage limits"),
+    to: "/settings/threads",
+    searchTerms: [msg("usage quota rate limit account failover another second continue")],
+  },
+  {
     id: "snooze-limited-threads",
     title: msg("Snooze until limits reset"),
     to: "/settings/threads",

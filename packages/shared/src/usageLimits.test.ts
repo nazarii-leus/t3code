@@ -2,6 +2,7 @@ import {
   DEFAULT_SERVER_SETTINGS,
   EnvironmentId,
   ProviderDriverKind,
+  ProjectId,
   ProviderInstanceId,
   type ServerProvider,
   UsageLimitSourceId,
@@ -23,6 +24,8 @@ import {
   paceOf,
   paceRemainingPercent,
   usesChatGptSharing,
+  limitSwitchAccountGroups,
+  resolveLimitSwitchSelection,
   resolveNewThreadModelSelection,
 } from "./usageLimits.ts";
 import { collectLimitNotices } from "./usageLimitsCopy.ts";
@@ -208,6 +211,107 @@ describe("new thread model fallback", () => {
       ).toEqual(usesFallback ? fallback : defaultSelection);
     },
   );
+});
+
+describe("limit account switch", () => {
+  const projectId = ProjectId.make("project");
+  const selection = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6.1-sol" };
+  const models = [
+    {
+      slug: "gpt-6.1-sol",
+      name: "GPT 6.1 Sol",
+      aliases: ["sol"],
+      isCustom: false,
+      capabilities: null,
+    },
+  ];
+  const account = (instanceId: string, usedPercent: number, groupKey = "codex:home:/work") =>
+    provider({
+      instanceId: ProviderInstanceId.make(instanceId),
+      continuation: { groupKey },
+      models,
+      usageLimits: { checkedAt: "2026-09-03T11:00:00.000Z", windows: [{ ...window, usedPercent }] },
+    });
+  const limited = account("codex", 100);
+  const shared = account("codex_shared", 80);
+  const roomy = account("codex_roomy", 10, "codex:home:/personal");
+  const settings = {
+    ...DEFAULT_SERVER_SETTINGS,
+    providerInstances: Object.fromEntries(
+      ["codex_shared", "codex_roomy", "codex_tight", "codex_spent"].map((id) => [
+        id,
+        { driver: limited.driver, config: {} },
+      ]),
+    ),
+  };
+  const resolve = (
+    providers: readonly ServerProvider[],
+    overrides: Partial<Parameters<typeof resolveLimitSwitchSelection>[0]> = {},
+  ) =>
+    resolveLimitSwitchSelection({
+      selection,
+      providers: [limited, ...providers],
+      settings,
+      projectId,
+      now,
+      ...overrides,
+    })?.instanceId ?? null;
+
+  it.each([
+    ["the account sharing the session store first", [roomy, shared], "codex_shared"],
+    ["then the most usage left", [account("codex_tight", 70, "other"), roomy], "codex_roomy"],
+    ["nothing when every other account is used up", [account("codex_spent", 100)], null],
+    ["nothing without usage data", [{ ...roomy, usageLimits: undefined }], null],
+    [
+      "nothing for another driver",
+      [{ ...roomy, driver: ProviderDriverKind.make("claudeAgent") }],
+      null,
+    ],
+    ["nothing without the model", [{ ...roomy, models: [] }], null],
+    ["nothing when signed out", [{ ...roomy, auth: { status: "unauthenticated" as const } }], null],
+    ["nothing when disabled", [{ ...roomy, enabled: false }], null],
+    ["nothing when unavailable", [{ ...roomy, availability: "unavailable" as const }], null],
+  ] as const)("picks %s", (_name, providers, expected) => {
+    expect(resolve(providers)).toBe(expected);
+  });
+
+  it("skips accounts the thread already ran out on and accounts off for the project", () => {
+    expect(resolve([roomy, shared], { excludedInstanceIds: [shared.instanceId] })).toBe(
+      "codex_roomy",
+    );
+    const projectOff = {
+      ...settings,
+      projectSettingsOverrides: {
+        [projectId]: { providerInstances: { [roomy.instanceId]: { enabled: false } } },
+      },
+    };
+    expect(resolve([roomy], { settings: projectOff })).toBeNull();
+  });
+
+  it("groups the accounts each provider can switch between", () => {
+    const claude = {
+      ...account("claude", 10, "claude"),
+      driver: ProviderDriverKind.make("claudeAgent"),
+    };
+    expect(
+      limitSwitchAccountGroups([limited, roomy, { ...shared, usageLimits: undefined }, claude]).map(
+        (accounts) => accounts.map(({ instanceId }) => instanceId),
+      ),
+    ).toEqual([["codex", "codex_roomy"]]);
+  });
+
+  it("keeps the model options and maps an alias to the account's own slug", () => {
+    const options = [{ id: "reasoningEffort", value: "high" }];
+    expect(
+      resolveLimitSwitchSelection({
+        selection: { ...selection, model: "sol", options },
+        providers: [limited, roomy],
+        settings,
+        projectId,
+        now,
+      }),
+    ).toEqual({ instanceId: roomy.instanceId, model: "gpt-6.1-sol", options });
+  });
 });
 
 describe("pace", () => {

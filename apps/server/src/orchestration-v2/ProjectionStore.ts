@@ -197,6 +197,12 @@ export type ProjectionLimitRecoveryCandidate = Pick<
   | "snoozedUntil"
 >;
 
+export type ProjectionLimitSwitchCandidate = ProjectionLimitRecoveryCandidate &
+  Pick<OrchestrationV2ThreadShell, "projectId" | "modelSelection"> & {
+    /** Accounts this thread ran out of usage on whose limit has not reset yet. */
+    readonly limitedInstanceIds: ReadonlyArray<ProviderInstanceId>;
+  };
+
 export type ProjectionThreadPullRequests = Pick<
   OrchestrationV2AppThread,
   "id" | "projectId" | "lineage" | "settledOverride" | "settledAt" | "pullRequests"
@@ -636,7 +642,9 @@ export interface ProjectionStoreV2Shape {
     readonly now: DateTime.Utc;
     readonly autoResume: boolean;
     readonly snooze: boolean;
-  }) => Effect.Effect<ReadonlyArray<ProjectionLimitRecoveryCandidate>, ProjectionStoreV2Error>;
+    /** Also limited threads already armed or left waiting, while their reset is ahead. */
+    readonly switchAccounts?: boolean;
+  }) => Effect.Effect<ReadonlyArray<ProjectionLimitSwitchCandidate>, ProjectionStoreV2Error>;
   /** Epoch ms of the next armed reset or snooze end after `now`, when a waiting thread becomes a candidate. */
   readonly getLimitRecoveryWakeAt: (
     now: DateTime.Utc,
@@ -4716,9 +4724,19 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           readonly completed_at: string | null;
           readonly failure_payload_json: string;
           readonly last_error: string | null;
+          readonly limited_instances: string | null;
         }>`
           SELECT t.payload_json, r.run_id, r.completed_at,
             item.payload_json AS failure_payload_json,
+            (
+              SELECT group_concat(DISTINCT json_extract(limited.payload_json, '$.providerInstanceId'))
+              FROM orchestration_v2_projection_turn_items failure
+              INNER JOIN orchestration_v2_projection_runs limited ON limited.run_id = failure.run_id
+              WHERE failure.thread_id = t.thread_id
+                AND failure.type = 'error' AND failure.status = 'failed'
+                AND json_extract(failure.payload_json, '$.failure.class') = 'usage_limit'
+                AND julianday(json_extract(failure.payload_json, '$.failure.resetAt')) > julianday(${DateTime.formatIso(options.now)})
+            ) AS limited_instances,
             (
               SELECT json_extract(session.payload_json, '$.lastError')
               -- Keep bindings outermost: one provider instance can hold every session.
@@ -4779,12 +4797,20 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               )
               OR (
                 (
-                  json_extract(t.payload_json, '$.limitRecovery.runId') IS NOT r.run_id
-                  OR json_extract(t.payload_json, '$.limitRecovery.resetAt') IS NOT json_extract(item.payload_json, '$.failure.resetAt')
-                )
-                AND (
-                  ${booleanInt(options.autoResume)}
-                  OR (${booleanInt(options.snooze)} AND julianday(json_extract(item.payload_json, '$.failure.resetAt')) > julianday(${DateTime.formatIso(options.now)}))
+                  (
+                    (
+                      json_extract(t.payload_json, '$.limitRecovery.runId') IS NOT r.run_id
+                      OR json_extract(t.payload_json, '$.limitRecovery.resetAt') IS NOT json_extract(item.payload_json, '$.failure.resetAt')
+                    )
+                    AND (
+                      ${booleanInt(options.autoResume)}
+                      OR (${booleanInt(options.snooze)} AND julianday(json_extract(item.payload_json, '$.failure.resetAt')) > julianday(${DateTime.formatIso(options.now)}))
+                    )
+                  )
+                  OR (
+                    ${booleanInt(options.switchAccounts === true)}
+                    AND julianday(json_extract(item.payload_json, '$.failure.resetAt')) > julianday(${DateTime.formatIso(options.now)})
+                  )
                 )
                 -- A subagent of a settled, archived or deleted parent is abandoned work.
                 AND NOT EXISTS (
@@ -4805,7 +4831,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             )
           ORDER BY t.thread_id
         `;
-        const candidates: Array<ProjectionLimitRecoveryCandidate> = [];
+        const candidates: Array<ProjectionLimitSwitchCandidate> = [];
         for (const row of rows) {
           const thread = yield* decodeThreadPayload(row.payload_json);
           const item = yield* decodeTurnItemPayload(row.failure_payload_json);
@@ -4828,6 +4854,12 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             pendingRuntimeRequest: null,
             limitRecovery: thread.limitRecovery ?? null,
             snoozedUntil: thread.snoozedUntil ?? null,
+            projectId: thread.projectId,
+            modelSelection: thread.modelSelection,
+            // Instance ids are slugs, so the default comma separator is unambiguous.
+            limitedInstanceIds: (row.limited_instances?.split(",") ?? []).map((id) =>
+              ProviderInstanceId.make(id),
+            ),
           });
         }
         return candidates;

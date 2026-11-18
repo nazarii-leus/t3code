@@ -3636,6 +3636,8 @@
   "f9904f78d3003f58": "Fast worktree checkout",
   "67937aa49179285e": "On a Mac, clone new worktrees from a checkout cached in the T3 home folder instead of writing every file. Uses Git’s normal checkout when it can’t. Turning it off deletes the cache.",
   "d6ada5ec242e37ff": "Usage limits",
+  "15f20b079cb48a82": "Switch accounts at usage limits",
+  "161bd2b97ca9af05": "Continue a thread on another signed-in account of the same provider when its account runs out of usage. With no account available, the thread waits for the reset.",
   "62127e7b5c0f57a3": "Resume after usage limits",
   "4df30d44eb0b0728": "Automatically resume threads when their usage limits reset. You can cancel auto-resume in each thread.",
   "20e3a8aab5f9426a": "Snooze until limits reset",

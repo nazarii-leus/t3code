@@ -1,4 +1,6 @@
 import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
+import { resolveProviderInstanceDisplayName } from "@t3tools/client-runtime/state/provider-instance-display";
+import { limitSwitchAccountGroups } from "@t3tools/shared/usageLimits";
 import { m as resolveMessage } from "~/i18n/messages";
 import { useAtomValue } from "@effect/atom-react";
 import { NotificationSettings } from "./NotificationSettings";
@@ -542,6 +544,10 @@ export function useSettingsRestore(onRestored?: () => void) {
     ...(settings.sidebarAutoSettleOnMerge !== DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleOnMerge
       ? [gt("Auto-settle merged threads")]
       : []),
+    ...(settings.switchAccountsAtUsageLimits !==
+    DEFAULT_UNIFIED_SETTINGS.switchAccountsAtUsageLimits
+      ? [gt("Switch accounts at usage limits")]
+      : []),
     ...(settings.autoResumeLimitedThreads !== DEFAULT_UNIFIED_SETTINGS.autoResumeLimitedThreads
       ? [gt("Resume after usage limits")]
       : []),
@@ -722,6 +728,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       sidebarAutoSettleAfterDays: DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleAfterDays,
       sidebarAutoSettleKeepPullRequests: DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleKeepPullRequests,
       sidebarAutoSettleOnMerge: DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleOnMerge,
+      switchAccountsAtUsageLimits: DEFAULT_UNIFIED_SETTINGS.switchAccountsAtUsageLimits,
       autoResumeLimitedThreads: DEFAULT_UNIFIED_SETTINGS.autoResumeLimitedThreads,
       snoozeLimitedThreads: DEFAULT_UNIFIED_SETTINGS.snoozeLimitedThreads,
       snoozePresets: DEFAULT_UNIFIED_SETTINGS.snoozePresets,
@@ -1872,6 +1879,7 @@ export function ThreadsSettingsPanel() {
     (environment?.serverConfig
       ? providersByEnvironment.get(environment.environmentId)
       : undefined) ?? EMPTY_SERVER_PROVIDERS;
+  const limitSwitchGroups = limitSwitchAccountGroups(serverProviders);
   const supportsAutoSettlementScope = connectedEnvironments.every(
     (target) => target.serverConfig?.environment.capabilities.threadAutoSettlementScope === true,
   );
@@ -1987,6 +1995,37 @@ export function ThreadsSettingsPanel() {
       ) : null}
 
       <SettingsSection id="usage-limits" title={gt("Usage limits")}>
+        <SettingsRow
+          serverScoped
+          {...setting("switch-accounts-at-usage-limits")}
+          description={gt(
+            "Continue a thread on another signed-in account of the same provider when its account runs out of usage. With no account available, the thread waits for the reset.",
+          )}
+          status={
+            !environment?.serverConfig
+              ? undefined
+              : limitSwitchGroups.length === 0
+                ? gt("Add a second signed-in account of a provider to switch between them.")
+                : gt("Switches between {accounts}.", {
+                    accounts: limitSwitchGroups
+                      .map((accounts) =>
+                        accounts.map(resolveProviderInstanceDisplayName).join(", "),
+                      )
+                      .join(" · "),
+                  })
+          }
+          settingKeys={["switchAccountsAtUsageLimits"]}
+          control={
+            <ScopedSwitch
+              settingKeys={["switchAccountsAtUsageLimits"]}
+              checked={settings.switchAccountsAtUsageLimits}
+              onCheckedChange={(checked) =>
+                updateSettings({ switchAccountsAtUsageLimits: Boolean(checked) })
+              }
+              aria-label={gt("Switch accounts at usage limits")}
+            />
+          }
+        />
         <SettingsRow
           serverScoped
           {...setting("auto-resume-limited-threads")}

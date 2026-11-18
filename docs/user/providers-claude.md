@@ -33,9 +33,10 @@ location intact. Use the same variable for the login command. Setting `HOME`
 instead can put credentials where this provider will not find them.
 
 Check the account reported in provider settings after signing in. Existing
-threads can switch only between Claude instances with the same config directory.
-Separate account directories stay isolated, including their local conversation
-state. Claude does not have Codex's shared-home and shadow-home arrangement.
+threads can switch between Claude instances. With the same config directory the
+session resumes; with another directory the new account starts its own session and
+receives a handoff of the recent conversation. Separate account directories stay
+isolated, including their local conversation state. Claude does not have Codex's shared-home and shadow-home arrangement.
 
 For presets that differ only in API keys or endpoints, use the instance's
 **Environment variables**. Variable assignments do not belong in **Launch arguments**.
@@ -87,7 +88,9 @@ If your Claude subscription runs out of usage mid-turn, the thread shows which
 limit was reached and the remaining wait when Claude provides a reset time.
 Claude Code holds the turn until that window reopens, so it can keep showing as
 working. Wait for the reset, or stop the turn and continue later. The warning's
-timestamp shows when the displayed wait started.
+timestamp shows when the displayed wait started. With
+[Switch accounts at usage limits](./thread-sidebar.md#inspect-agent-work) on, a
+turn that stops on the limit continues on another Claude account with usage left.
 
 ## Skills
 

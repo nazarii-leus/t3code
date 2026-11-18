@@ -142,7 +142,9 @@ sign in to Codex with an account that has it.
 When Codex stops on a usage limit, the thread names the window that ran out and
 when it resets, when Codex reports them. Send the message again after the reset. On a workspace plan the
 message also says whether your workspace owner needs to add credits or raise the
-spend limit to continue sooner.
+spend limit to continue sooner. With
+[Switch accounts at usage limits](./thread-sidebar.md#inspect-agent-work) on, the
+thread continues on another Codex account with usage left instead.
 
 ## Send feedback to OpenAI
 

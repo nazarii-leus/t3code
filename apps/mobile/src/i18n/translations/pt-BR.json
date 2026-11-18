@@ -3630,6 +3630,8 @@
   "f9904f78d3003f58": "Checkout rápido de worktree",
   "67937aa49179285e": "No Mac, clona novos worktrees a partir de um checkout em cache na pasta T3 home em vez de gravar cada arquivo. Usa o checkout normal do Git quando não consegue. Desativar exclui o cache.",
   "d6ada5ec242e37ff": "Limites de uso",
+  "15f20b079cb48a82": "Trocar de conta nos limites de uso",
+  "161bd2b97ca9af05": "Continua uma thread em outra conta conectada do mesmo provedor quando a conta dela fica sem uso. Sem conta disponível, a thread espera a redefinição.",
   "62127e7b5c0f57a3": "Retomar após limites de uso",
   "4df30d44eb0b0728": "Retoma as threads automaticamente quando os limites de uso delas forem redefinidos. Você pode cancelar a retomada automática em cada thread.",
   "20e3a8aab5f9426a": "Adiar até os limites serem redefinidos",

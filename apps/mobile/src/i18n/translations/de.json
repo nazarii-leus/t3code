@@ -3635,6 +3635,8 @@
   "f9904f78d3003f58": "Schneller Worktree-Checkout",
   "67937aa49179285e": "Auf einem Mac neue Worktrees aus einem im T3-Home-Ordner zwischengespeicherten Checkout klonen, statt jede Datei zu schreiben. Verwendet den normalen Git-Checkout, wenn das nicht geht. Beim Ausschalten wird der Cache gelöscht.",
   "d6ada5ec242e37ff": "Nutzungslimits",
+  "15f20b079cb48a82": "Bei Nutzungslimits Konto wechseln",
+  "161bd2b97ca9af05": "Einen Thread mit einem anderen angemeldeten Konto desselben Anbieters fortsetzen, wenn sein Konto keine Nutzung mehr hat. Ist kein Konto verfügbar, wartet der Thread auf das Zurücksetzen.",
   "62127e7b5c0f57a3": "Nach Nutzungslimits fortsetzen",
   "4df30d44eb0b0728": "Threads automatisch fortsetzen, wenn ihre Nutzungslimits zurückgesetzt werden. Du kannst das automatische Fortsetzen in jedem Thread abbrechen.",
   "20e3a8aab5f9426a": "Bis zum Zurücksetzen der Limits zurückstellen",

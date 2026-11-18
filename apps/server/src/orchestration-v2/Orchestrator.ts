@@ -35,6 +35,7 @@ import {
   type ModelSelection,
   OrchestrationV2Command,
   type OrchestrationV2InternalCommand,
+  type OrchestrationV2LimitRecovery,
   type OrchestrationV2LimitRecoveryUpdate,
   type OrchestrationV2Notification,
   type OrchestrationV2ServerCommand,
@@ -859,6 +860,21 @@ function mayStartSubagentFollowup(
     command.createdBy === "user" ||
     command.creationSource === "mcp" ||
     command.usageLimitContinuationOfRunId !== undefined
+  );
+}
+
+/**
+ * Stop, or the user's own resume or snooze choice, for this failure. The recovery worker's own arm
+ * also stamps a request id, under its `limit-arm:` command id.
+ */
+export function userChoseLimitRecovery(
+  recovery: OrchestrationV2LimitRecovery | null | undefined,
+  runId: RunId,
+): boolean {
+  return (
+    recovery?.runId === runId &&
+    recovery.requestId !== undefined &&
+    !recovery.requestId.startsWith("limit-arm:")
   );
 }
 
@@ -6915,15 +6931,23 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       const failure = latestRootProviderFailure(run, projection.turnItems);
       const recovery = projection.thread.limitRecovery;
       const now = yield* DateTime.now;
+      // A continuation on another account does not wait for this account's reset; it yields
+      // only to Stop (also one that reached the run before its failure) or the user's own choice.
+      const switching =
+        command.modelSelection !== undefined &&
+        command.modelSelection.instanceId !== run?.providerInstanceId;
       if (
         run?.id !== command.usageLimitContinuationOfRunId ||
         failure?.class !== "usage_limit" ||
         threadShellFromProjection(projection).lastErrorClass !== "usage_limit" ||
-        !recovery?.autoResume ||
-        recovery.requestId !== command.usageLimitRecoveryRequestId ||
-        recovery.runId !== run.id ||
-        recovery.resetAt !== failure.resetAt ||
-        Date.parse(recovery.resetAt) > DateTime.toEpochMillis(now) ||
+        (switching
+          ? userChoseLimitRecovery(recovery, run.id) ||
+            (yield* stopReachedRun(command, command.threadId, run.id))
+          : !recovery?.autoResume ||
+            recovery.requestId !== command.usageLimitRecoveryRequestId ||
+            recovery.runId !== run.id ||
+            recovery.resetAt !== failure.resetAt ||
+            Date.parse(recovery.resetAt) > DateTime.toEpochMillis(now)) ||
         projection.thread.archivedAt !== null ||
         projection.thread.deletedAt !== null ||
         projection.thread.settledOverride === "settled" ||
@@ -6941,7 +6965,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           occurredAt: now,
           payload: {
             ...projection.thread,
-            ...(recovery?.autoResume &&
+            ...(!switching &&
+            recovery?.autoResume &&
             recovery.requestId === command.usageLimitRecoveryRequestId &&
             recovery.runId === command.usageLimitContinuationOfRunId &&
             projection.thread.snoozedUntil != null &&
@@ -7249,7 +7274,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         (command.creationSource !== "server" && command.creationSource !== "provider") ||
         (dispatchMode.type !== "queue_after_active" &&
           !(
-            command.restartContinuationOfRunId !== undefined &&
+            (command.restartContinuationOfRunId !== undefined ||
+              command.usageLimitContinuationOfRunId !== undefined) &&
             dispatchMode.type === "start_immediately"
           )))
     ) {

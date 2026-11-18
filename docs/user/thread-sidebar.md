@@ -269,6 +269,16 @@ the snooze. Enable **Snooze until limits reset** in thread behavior settings to
 snooze limit stops by default. Providers without a reset time offer manual
 retry and the normal snooze choices.
 
+Turn on **Switch accounts at usage limits** in **Settings → Threads** to continue
+a limited thread at once on another signed-in account of the same provider. T3 Code
+picks an account that offers the thread's model and still reports usage left,
+preferring one that can resume the same session. An account that reports no usage,
+such as an API key, is never picked. The thread notes which account took over and
+stays on it. With no account available, or after you stop the thread or choose to
+resume or snooze it, the thread waits for the reset as above. The provider must
+report a reset time. Rotating accounts can break a provider's terms; see the
+[FAQ](./faq.md#can-i-add-a-bunch-of-accounts-for-one-provider).
+
 On web and desktop, use **Agents** to follow work delegated to subagents.
 On mobile, open a subagent from its conversation card or **Agents**. On iOS
 layouts with an inspector, its thread opens beside the parent. Maximize it to

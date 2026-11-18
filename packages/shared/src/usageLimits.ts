@@ -20,6 +20,7 @@ import {
 import * as DateTime from "effect/DateTime";
 
 import { isLocalLoopbackHost, isWildcardHost } from "./hostClassification.ts";
+import { resolveSelectableModel } from "./model.ts";
 
 const MINUTE = 60_000;
 
@@ -112,6 +113,71 @@ export function resolveNewThreadModelSelection(input: {
     selection: input.fallbackSelection,
     fallback: { provider, resetsAt: window.resetsAt ?? null },
   };
+}
+
+/** Accounts that report no usage never take over: unknown quota is not free quota. */
+const canTakeOverLimitedThreads = (provider: ServerProvider) =>
+  provider.enabled &&
+  provider.installed &&
+  provider.auth.status !== "unauthenticated" &&
+  isProviderAvailable(provider) &&
+  (provider.usageLimits?.windows.length ?? 0) > 0;
+
+/** Accounts per provider that threads can move between at a usage limit; providers with one are left out. */
+export function limitSwitchAccountGroups(
+  providers: readonly ServerProvider[],
+): ReadonlyArray<ReadonlyArray<ServerProvider>> {
+  const groups = new Map<string, Array<ServerProvider>>();
+  for (const provider of providers.filter(canTakeOverLimitedThreads))
+    groups.set(provider.driver, [...(groups.get(provider.driver) ?? []), provider]);
+  return [...groups.values()].filter((accounts) => accounts.length > 1);
+}
+
+/** Another account of the same provider that can take a thread over when its own runs out of usage. */
+export function resolveLimitSwitchSelection(input: {
+  readonly selection: ModelSelection;
+  readonly providers: readonly ServerProvider[];
+  readonly settings: Pick<ServerSettings, "providerInstances" | "projectSettingsOverrides">;
+  readonly projectId: ProjectId;
+  readonly now: number;
+  readonly excludedInstanceIds?: ReadonlyArray<ProviderInstanceId>;
+}): ModelSelection | null {
+  const current = input.providers.find(
+    (provider) => provider.instanceId === input.selection.instanceId,
+  );
+  if (!current) return null;
+  const candidates = input.providers.flatMap((provider) => {
+    if (
+      provider.driver !== current.driver ||
+      provider.instanceId === current.instanceId ||
+      input.excludedInstanceIds?.includes(provider.instanceId) ||
+      !canTakeOverLimitedThreads(provider) ||
+      !resolveProjectProviderInstanceEnabled(input.settings, input.projectId, provider.instanceId)
+    )
+      return [];
+    const model = resolveSelectableModel(provider.driver, input.selection.model, provider.models);
+    if (model === null || exhaustedUsageWindow(provider, input.now, model)) return [];
+    const windows = (provider.usageLimits?.windows ?? []).filter(
+      (window) => window.modelIds === undefined || window.modelIds.includes(model),
+    );
+    if (windows.length === 0) return [];
+    return [
+      {
+        selection: { ...input.selection, instanceId: provider.instanceId, model },
+        sharesSession:
+          current.continuation !== undefined &&
+          provider.continuation?.groupKey === current.continuation.groupKey,
+        remaining: Math.min(...windows.map(remainingPercent)),
+      },
+    ];
+  });
+  candidates.sort(
+    (a, b) =>
+      Number(b.sharesSession) - Number(a.sharesSession) ||
+      b.remaining - a.remaining ||
+      a.selection.instanceId.localeCompare(b.selection.instanceId),
+  );
+  return candidates[0]?.selection ?? null;
 }
 
 export const CHATGPT_USAGE_URL = "https://chatgpt.com/#settings/Usage";

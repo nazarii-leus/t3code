@@ -1,9 +1,20 @@
-import { CommandId, MessageId, type OrchestrationV2Command } from "@t3tools/contracts";
+import {
+  CommandId,
+  MessageId,
+  PROVIDER_DISPLAY_NAMES,
+  type OrchestrationV2Command,
+  type ProviderDriverKind,
+  type ProviderInstanceId,
+  type ServerProvider,
+  type ServerSettings as ServerSettingsValue,
+} from "@t3tools/contracts";
+import { resolveLimitSwitchSelection } from "@t3tools/shared/usageLimits";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
 import type { OrchestrationV2DomainEvent } from "@t3tools/contracts";
+import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as DueHint from "../scheduling/DueHint.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import { forkParked } from "../serverActivation.ts";
@@ -78,6 +89,66 @@ export function limitRecoveryCommand(
   };
 }
 
+/** Continues a limited thread at once on another account of its provider that has usage left. */
+export function limitSwitchCommand(
+  thread: ProjectionStore.ProjectionLimitSwitchCandidate,
+  providers: ReadonlyArray<ServerProvider>,
+  settings: ServerSettingsValue,
+  nowMs: number,
+): OrchestrationV2Command | null {
+  if (
+    !settings.switchAccountsAtUsageLimits ||
+    thread.status !== "failed" ||
+    thread.lastErrorClass !== "usage_limit" ||
+    !thread.latestRunId ||
+    !thread.usageLimitResetAt ||
+    !(Date.parse(thread.usageLimitResetAt) > nowMs) ||
+    // A thread the user already moved to another account is theirs to send.
+    !thread.limitedInstanceIds.includes(thread.modelSelection.instanceId) ||
+    thread.archivedAt !== null ||
+    thread.settledOverride === "settled" ||
+    thread.pendingRuntimeRequest !== null ||
+    (thread.snoozedUntil != null && DateTime.toEpochMillis(thread.snoozedUntil) > nowMs) ||
+    Orchestrator.userChoseLimitRecovery(thread.limitRecovery, thread.latestRunId)
+  )
+    return null;
+  const selection = resolveLimitSwitchSelection({
+    selection: thread.modelSelection,
+    providers,
+    settings,
+    projectId: thread.projectId,
+    now: nowMs,
+    excludedInstanceIds: thread.limitedInstanceIds,
+  });
+  if (selection === null) return null;
+  // A default instance's id is its driver kind.
+  const accountName = (id: ProviderInstanceId) =>
+    providers.find((provider) => provider.instanceId === id)?.displayName?.trim() ||
+    PROVIDER_DISPLAY_NAMES[id as string as ProviderDriverKind] ||
+    id;
+  const text = "Continue where you left off.";
+  const identity = `${thread.id}:${thread.latestRunId}`;
+  return {
+    type: "message.dispatch",
+    commandId: CommandId.make(`limit-switch:${identity}`),
+    messageId: MessageId.make(`limit-switch:${identity}`),
+    threadId: thread.id,
+    usageLimitContinuationOfRunId: thread.latestRunId,
+    modelSelection: selection,
+    text,
+    notification: {
+      source: { kind: "system" },
+      outcome: "updated",
+      summary: `${accountName(thread.modelSelection.instanceId)} ran out of usage. Continuing on ${accountName(selection.instanceId)}.`,
+      detail: text,
+    },
+    attachments: [],
+    dispatchMode: { type: "start_immediately" },
+    createdBy: "agent",
+    creationSource: "server",
+  };
+}
+
 // Events that can make a thread a candidate or change its command; streaming items cannot.
 const affectsLimitRecovery = (event: OrchestrationV2DomainEvent) =>
   event.type.startsWith("thread.") ||
@@ -92,6 +163,7 @@ const makeSweep = Effect.gen(function* () {
   const threads = yield* ThreadManagement.ThreadManagementService;
   const orchestrator = yield* Orchestrator.OrchestratorV2;
   const settings = yield* ServerSettings.ServerSettingsService;
+  const registry = yield* ProviderRegistry.ProviderRegistry;
   const due = DueHint.make();
   yield* forkParked(
     Stream.runForEach(orchestrator.streamDomainEvents, (event) =>
@@ -99,6 +171,8 @@ const makeSweep = Effect.gen(function* () {
     ),
   );
   yield* forkParked(Stream.runForEach(settings.streamChanges, () => due.invalidate));
+  // Fresh usage readings can free an account for a thread that is waiting on its reset.
+  yield* forkParked(Stream.runForEach(registry.streamChanges, () => due.invalidate));
   return Effect.fn("UsageLimitRecoveryWorker.sweep")(function* () {
     const now = yield* DateTime.now;
     const nowMs = DateTime.toEpochMillis(now);
@@ -109,15 +183,19 @@ const makeSweep = Effect.gen(function* () {
       now,
       autoResume: preferences.autoResumeLimitedThreads,
       snooze: preferences.snoozeLimitedThreads,
+      switchAccounts: preferences.switchAccountsAtUsageLimits,
     });
+    const providers = candidates.length === 0 ? [] : yield* registry.getProviders;
     let acted = false;
     for (const thread of candidates) {
-      const command = limitRecoveryCommand(
-        thread,
-        preferences.autoResumeLimitedThreads,
-        nowMs,
-        preferences.snoozeLimitedThreads,
-      );
+      const command =
+        limitSwitchCommand(thread, providers, preferences, nowMs) ??
+        limitRecoveryCommand(
+          thread,
+          preferences.autoResumeLimitedThreads,
+          nowMs,
+          preferences.snoozeLimitedThreads,
+        );
       if (command === null) continue;
       acted = true;
       yield* Effect.gen(function* () {

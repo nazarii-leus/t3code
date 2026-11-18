@@ -108,6 +108,7 @@ export function AutoSettleSettingsRows(props: {
     patch: Partial<AutoSettleSettings> & {
       autoResumeLimitedThreads?: boolean;
       snoozeLimitedThreads?: boolean;
+      switchAccountsAtUsageLimits?: boolean;
     },
   ) => props.write(patch);
 
@@ -134,6 +135,16 @@ export function AutoSettleSettingsRows(props: {
     <View className="gap-6">
       {!projectSelected ? (
         <SettingsSection title={gt("Usage limits")}>
+          <SettingsSwitchRow
+            icon="arrow.left.arrow.right"
+            label={gt("Switch accounts at usage limits")}
+            subtitle={gt(
+              "Continue a thread on another signed-in account of the same provider when its account runs out of usage. With no account available, the thread waits for the reset.",
+            )}
+            value={uniformMobileSetting(displayTargets, "switchAccountsAtUsageLimits")}
+            disabled={disabledFor("switchAccountsAtUsageLimits")}
+            onValueChange={(value) => writeToAll({ switchAccountsAtUsageLimits: value })}
+          />
           <SettingsSwitchRow
             icon="clock"
             label={gt("Resume after usage limits")}

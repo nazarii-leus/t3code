@@ -1,6 +1,6 @@
 import { PullRequestProviderError } from "@t3tools/source-control-core/server/PullRequestProvider";
 import { SourceControlProviderKind } from "@t3tools/contracts";
-import { limitRecoveryCommand } from "./UsageLimitRecoveryWorker.ts";
+import { limitRecoveryCommand, limitSwitchCommand } from "./UsageLimitRecoveryWorker.ts";
 import { createOrchestrationV2TurnItemVisibility } from "@t3tools/shared/orchestrationV2Timeline";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import * as SourceControlProviderRegistry from "../sourceControl/SourceControlProviderRegistry.ts";
@@ -38,7 +38,9 @@ import {
   ProviderTurnId,
   RunId,
   ScheduledTaskId,
+  type ServerProvider,
   ThreadId,
+  DEFAULT_SERVER_SETTINGS,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as DateTime from "effect/DateTime";
@@ -8905,6 +8907,200 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
         const resumed = reset.runs.find((run) => run.id === queued.id);
         assert.equal(resumed?.status, "starting");
         assert.deepEqual(resumed?.modelSelection, modelSelection);
+      }),
+  );
+
+  it.effect.each(["switches", "armed", "stopped", "back"] as const)(
+    "continues a usage-limited thread on another account: %s",
+    (scenario) =>
+      Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const eventSink = yield* EventSink.EventSinkV2;
+        const projections = yield* ProjectionStore.ProjectionStoreV2;
+        const threadId = ThreadId.make(`runtime-layer-limit-account-switch-${scenario}`);
+        yield* orchestrator.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make(`${threadId}:create`),
+          threadId,
+          createdBy: "user",
+          creationSource: "web",
+          projectId: ProjectId.make(`${threadId}:project`),
+          title: "Limit account switch",
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: process.cwd(),
+        });
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make(`${threadId}:limited`),
+          threadId,
+          messageId: MessageId.make(`${threadId}:limited`),
+          text: "Work on this.",
+          attachments: [],
+          createdBy: "user",
+          creationSource: "web",
+          dispatchMode: { type: "start_immediately" },
+        });
+        const now = yield* DateTime.now;
+        const failOnLimit = (run: OrchestrationV2Run) =>
+          eventSink.write({
+            events: [
+              {
+                id: EventId.make(`${run.id}:error`),
+                type: "turn-item.updated",
+                threadId,
+                runId: run.id,
+                nodeId: run.rootNodeId!,
+                providerInstanceId: run.providerInstanceId,
+                occurredAt: now,
+                payload: {
+                  id: TurnItemId.make(`${run.id}:error`),
+                  type: "error",
+                  threadId,
+                  runId: run.id,
+                  nodeId: run.rootNodeId!,
+                  providerThreadId: run.providerThreadId,
+                  providerTurnId: null,
+                  nativeItemRef: null,
+                  parentItemId: null,
+                  ordinal: 2,
+                  status: "failed",
+                  title: "Usage limit",
+                  startedAt: now,
+                  completedAt: now,
+                  updatedAt: now,
+                  failure: {
+                    class: "usage_limit",
+                    message: "Usage limit reached",
+                    code: "usage_limit",
+                    retryable: null,
+                    resetAt: DateTime.formatIso(DateTime.add(now, { hours: 1 })),
+                  },
+                },
+              },
+              {
+                id: EventId.make(`${run.id}:failed`),
+                type: "run.updated",
+                threadId,
+                runId: run.id,
+                providerInstanceId: run.providerInstanceId,
+                occurredAt: now,
+                payload: { ...run, status: "failed", completedAt: now },
+              },
+            ],
+          });
+        const [limited] = (yield* orchestrator.getThreadProjection(threadId)).runs;
+        assert.isDefined(limited);
+        yield* failOnLimit(limited);
+        if (scenario === "armed") {
+          // Auto-resume armed the failure before another account had room.
+          const shell = (yield* orchestrator.getShellSnapshot()).threads.find(
+            (thread) => thread.id === threadId,
+          )!;
+          const arm = limitRecoveryCommand(shell, true, DateTime.toEpochMillis(now));
+          assert(arm?.type === "thread.metadata.update" && arm.limitRecovery != null);
+          yield* orchestrator.autoArmLimitRecovery({
+            commandId: arm.commandId,
+            threadId,
+            limitRecovery: arm.limitRecovery,
+          });
+        }
+
+        // The limited account still reports room: only the failures rule it out.
+        const account = (instanceId: ProviderInstanceId, displayName: string) =>
+          ({
+            instanceId,
+            driver,
+            displayName,
+            enabled: true,
+            installed: true,
+            version: null,
+            status: "ready",
+            auth: { status: "authenticated" },
+            checkedAt: DateTime.formatIso(now),
+            models: [
+              { slug: modelSelection.model, name: "GPT", isCustom: false, capabilities: null },
+            ],
+            slashCommands: [],
+            skills: [],
+            usageLimits: {
+              checkedAt: DateTime.formatIso(now),
+              windows: [{ id: "primary", kind: "session", label: "Session", usedPercent: 10 }],
+            },
+          }) satisfies ServerProvider;
+        const providers = [
+          account(modelSelection.instanceId, "Codex Work"),
+          account(alternateInstanceId, "Codex Personal"),
+        ];
+        const settings = {
+          ...DEFAULT_SERVER_SETTINGS,
+          switchAccountsAtUsageLimits: true,
+          providerInstances: { [alternateInstanceId]: { driver, config: {} } },
+        };
+        const switchCommand = projections
+          .getLimitRecoveryCandidates({
+            now,
+            autoResume: false,
+            snooze: false,
+            switchAccounts: true,
+          })
+          .pipe(
+            Effect.map((candidates) => {
+              const thread = candidates.find((candidate) => candidate.id === threadId);
+              return (
+                thread &&
+                limitSwitchCommand(thread, providers, settings, DateTime.toEpochMillis(now))
+              );
+            }),
+          );
+        const command = yield* switchCommand;
+        assert(command?.type === "message.dispatch");
+        assert.isNull(
+          limitSwitchCommand(
+            (yield* projections.getLimitRecoveryCandidates({
+              now,
+              autoResume: false,
+              snooze: false,
+              switchAccounts: true,
+            })).find((candidate) => candidate.id === threadId)!,
+            providers,
+            { ...settings, switchAccountsAtUsageLimits: false },
+            DateTime.toEpochMillis(now),
+          ),
+        );
+
+        if (scenario === "stopped") {
+          yield* orchestrator.dispatch({
+            type: "thread.stop",
+            commandId: CommandId.make(`${threadId}:stop`),
+            threadId,
+          });
+          assert.isNull(yield* switchCommand);
+          yield* orchestrator.dispatch(command);
+          assert.lengthOf((yield* orchestrator.getThreadProjection(threadId)).runs, 1);
+          return;
+        }
+
+        yield* orchestrator.dispatch(command);
+        const switched = yield* orchestrator.getThreadProjection(threadId);
+        const continued = switched.runs.at(-1)!;
+        assert.notEqual(continued.id, limited.id);
+        assert.equal(continued.status, "starting");
+        assert.equal(continued.providerInstanceId, alternateInstanceId);
+        assert.equal(switched.thread.providerInstanceId, alternateInstanceId);
+        assert.equal(
+          switched.messages.find((message) => message.id === command.messageId)?.notification
+            ?.summary,
+          "Codex Work ran out of usage. Continuing on Codex Personal.",
+        );
+
+        if (scenario === "back") {
+          yield* failOnLimit(continued);
+          // Both accounts failed with resets ahead; the thread waits instead of bouncing back.
+          assert.isNull(yield* switchCommand);
+        }
       }),
   );
 

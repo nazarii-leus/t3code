@@ -3630,6 +3630,8 @@
   "f9904f78d3003f58": "Checkout rápido de worktrees",
   "67937aa49179285e": "En un Mac, clona los nuevos worktrees desde un checkout en caché en la carpeta de inicio de T3 en lugar de escribir cada archivo. Usa el checkout normal de Git cuando no puede. Al desactivarlo se elimina la caché.",
   "d6ada5ec242e37ff": "Límites de uso",
+  "15f20b079cb48a82": "Cambiar de cuenta en los límites de uso",
+  "161bd2b97ca9af05": "Continúa un hilo en otra cuenta con sesión iniciada del mismo proveedor cuando su cuenta se queda sin uso. Si no hay ninguna cuenta disponible, el hilo espera al restablecimiento.",
   "62127e7b5c0f57a3": "Reanudar tras los límites de uso",
   "4df30d44eb0b0728": "Reanuda automáticamente los hilos cuando se restablecen sus límites de uso. Puedes cancelar la reanudación automática en cada hilo.",
   "20e3a8aab5f9426a": "Posponer hasta que se restablezcan los límites",
