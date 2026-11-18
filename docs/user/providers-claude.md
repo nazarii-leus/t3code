@@ -33,10 +33,20 @@ location intact. Use the same variable for the login command. Setting `HOME`
 instead can put credentials where this provider will not find them.
 
 Check the account reported in provider settings after signing in. Existing
-threads can switch between Claude instances. With the same config directory the
-session resumes; with another directory the new account starts its own session and
-receives a handoff of the recent conversation. Separate account directories stay
-isolated, including their local conversation state. Claude does not have Codex's shared-home and shadow-home arrangement.
+threads can switch between Claude instances. When both use the same transcripts the
+session resumes; otherwise the new account starts its own session and receives a
+handoff of the recent conversation. Separate account directories stay isolated,
+including their local conversation state.
+
+To let two accounts resume each other's sessions, link the second account's
+transcripts to the first's before it starts any session (move an existing
+`projects` folder there aside first):
+
+```bash
+ln -s ~/.claude/projects ~/.claude_personal/projects
+```
+
+Then refresh provider status.
 
 For presets that differ only in API keys or endpoints, use the instance's
 **Environment variables**. Variable assignments do not belong in **Launch arguments**.

@@ -8,7 +8,6 @@ import * as Path from "effect/Path";
 
 import {
   makeClaudeCapabilitiesCacheKey,
-  makeClaudeContinuationGroupKey,
   makeClaudeEnvironment,
   mergeClaudeProcessEnvironment,
   resolveClaudeHomePath,
@@ -16,7 +15,7 @@ import {
 
 it.layer(NodeServices.layer)("ClaudeHome", (it) => {
   describe("Claude home resolution", () => {
-    it.effect("resolves configured Claude HOME and stamps continuation/cache keys with it", () =>
+    it.effect("resolves configured Claude HOME and stamps capability cache keys with it", () =>
       Effect.gen(function* () {
         const path = yield* Path.Path;
         const homePath = "~/.claude-work";
@@ -24,7 +23,6 @@ it.layer(NodeServices.layer)("ClaudeHome", (it) => {
 
         expect(yield* resolveClaudeHomePath({ homePath })).toBe(resolved);
         expect((yield* makeClaudeEnvironment({ homePath })).CLAUDE_CONFIG_DIR).toBe(resolved);
-        expect(yield* makeClaudeContinuationGroupKey({ homePath })).toBe(`claude:home:${resolved}`);
         expect(yield* makeClaudeCapabilitiesCacheKey({ binaryPath: "claude", homePath })).toBe(
           `claude\0${resolved}\0`,
         );
@@ -38,9 +36,6 @@ it.layer(NodeServices.layer)("ClaudeHome", (it) => {
         const environment = { CLAUDE_CONFIG_DIR: inherited };
 
         expect(yield* resolveClaudeHomePath({ homePath: "" }, environment)).toBe(inherited);
-        expect(yield* makeClaudeContinuationGroupKey({ homePath: "" }, environment)).toBe(
-          `claude:home:${inherited}`,
-        );
 
         const explicit = path.resolve(NodeOS.homedir(), ".claude-work");
         expect(yield* resolveClaudeHomePath({ homePath: "~/.claude-work" }, environment)).toBe(

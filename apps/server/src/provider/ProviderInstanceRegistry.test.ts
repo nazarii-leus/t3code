@@ -1,3 +1,5 @@
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- Effect symlink cannot create Windows directory junctions.
+import * as NodeFSP from "node:fs/promises";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as CodexInstallation from "./CodexInstallation.ts";
 import * as CodexManagedTokenBroker from "./CodexManagedTokenBroker.ts";
@@ -473,6 +475,60 @@ describe("ProviderInstanceRegistry — multi-instance codex slice", () => {
         version: "2.1.219",
         auth: { status: "authenticated" },
       });
+    }).pipe(Effect.provide(layerTest)),
+  );
+
+  it.live("groups Claude auth overlays by their shared transcript store", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fs.makeTempDirectoryScoped({ prefix: "claude-continuation-" });
+      const homes = ["shared", "overlay", "separate", "missing", "dangling"] as const;
+      for (const name of homes) {
+        yield* fs.makeDirectory(path.join(root, name));
+      }
+      const configMap = Object.fromEntries(
+        homes.map((name) => [
+          ProviderInstanceId.make(name),
+          {
+            driver: ClaudeDriver.driverKind,
+            enabled: false,
+            config: makeClaudeConfig({ homePath: path.join(root, name) }),
+          },
+        ]),
+      );
+      yield* fs.makeDirectory(path.join(root, "shared", "projects"));
+      yield* fs.makeDirectory(path.join(root, "separate", "projects"));
+      yield* Effect.promise(() =>
+        NodeFSP.symlink(
+          path.join(root, "shared", "projects"),
+          path.join(root, "overlay", "projects"),
+          "junction",
+        ),
+      );
+      yield* Effect.promise(() =>
+        NodeFSP.symlink(
+          path.join(root, "missing", "projects"),
+          path.join(root, "dangling", "projects"),
+          "junction",
+        ),
+      );
+
+      const { registry } = yield* makeProviderInstanceRegistry<ClaudeDriverEnv>({
+        drivers: [ClaudeDriver],
+        configMap,
+      });
+      const groups = yield* Effect.forEach(homes, (name) =>
+        Effect.gen(function* () {
+          const instance = yield* registry.getInstance(ProviderInstanceId.make(name));
+          const snapshot = yield* instance!.snapshot.getSnapshot;
+          expect(snapshot.continuation?.groupKey).toEqual(expect.any(String));
+          return snapshot.continuation!.groupKey;
+        }),
+      );
+      const [shared, overlay, ...isolated] = groups;
+      expect(overlay).toBe(shared);
+      expect(new Set([shared, ...isolated]).size).toBe(4);
     }).pipe(Effect.provide(layerTest)),
   );
 
