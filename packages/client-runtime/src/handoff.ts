@@ -90,14 +90,16 @@ function latestRunModelBefore(
 }
 
 export interface ModelSwitchChange {
+  /** The thread moved to another account of the same provider, such as at a usage limit. */
+  readonly accountChanged: boolean;
   readonly modelChanged: boolean;
   /** Effort labels, set only when the effort changed. */
   readonly effort: { readonly from: string; readonly to: string } | null;
 }
 
 /**
- * What a recorded model switch visibly changed, or null when it changed neither the model nor the
- * effort. The composer omits an untouched effort, so an unset effort reads as the model's default.
+ * What a recorded model switch visibly changed, or null when it changed neither the account, the
+ * model nor the effort. The composer omits an untouched effort, so an unset effort reads as the model's default.
  */
 export function resolveModelSwitchChange(
   { from, to }: OrchestrationV2ModelSwitch,
@@ -107,12 +109,13 @@ export function resolveModelSwitchChange(
     providers.find((provider) => provider.instanceId === selection.instanceId)?.models;
   const fromEffort = resolveEffort(from, modelsOf(from));
   const toEffort = resolveEffort(to, modelsOf(to));
+  const accountChanged = from.instanceId !== to.instanceId;
   const modelChanged = from.model !== to.model;
   const effort =
     fromEffort && toEffort && fromEffort.value !== toEffort.value
       ? { from: fromEffort.label, to: toEffort.label }
       : null;
-  return modelChanged || effort ? { modelChanged, effort } : null;
+  return accountChanged || modelChanged || effort ? { accountChanged, modelChanged, effort } : null;
 }
 
 /** The composer's reasoning control for the model; stated values only when the catalog lacks it. */

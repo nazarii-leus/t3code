@@ -91,6 +91,8 @@ working. Wait for the reset, or stop the turn and continue later. The warning's
 timestamp shows when the displayed wait started. With
 [Switch accounts at usage limits](./thread-sidebar.md#inspect-agent-work) on, a
 turn that stops on the limit continues on another Claude account with usage left.
+A turn Claude holds moves once it stops, which can take 10 minutes. To move it
+sooner, stop it and send your next message; it starts on another account.
 
 ## Skills
 

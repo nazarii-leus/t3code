@@ -4828,6 +4828,13 @@ function providerFailureFromResult(
   });
 }
 
+/** The latest reset among the limits Claude reported, or null when any of them lacks one. */
+function latestClaudeResetAt(times: ReadonlyArray<string | null>): string | null {
+  return times.length > 0 && times.every((time) => time !== null)
+    ? times.reduce<string>((latest, time) => (time! > latest ? time! : latest), "")
+    : null;
+}
+
 function providerFailureFromApiRetry(message: SDKAPIRetryMessage): OrchestrationV2ProviderFailure {
   const errorName = message.error.replaceAll("_", " ");
   return makeProviderFailure({
@@ -6477,7 +6484,17 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
         ) {
           // A user Stop already in flight keeps its interrupted outcome.
           if ((yield* Ref.get(interruptedTurns)).has(context.providerTurnId)) return;
-          context.retryBudgetFailure = failure;
+          // Claude holds a turn on a rejected limit; a stall then is that limit, with its reset.
+          context.retryBudgetFailure =
+            context.rejectedRateLimitTypes.size === 0
+              ? failure
+              : {
+                  ...failure,
+                  class: "usage_limit",
+                  message:
+                    "Claude usage limit reached. Send the message again once the limit resets.",
+                  resetAt: latestClaudeResetAt([...context.rateLimitResetTimes.values()]),
+                };
           const liveQuery = yield* Ref.get(queryContext);
           yield* interruptTurn({
             providerThread: context.input.providerThread,
@@ -11943,10 +11960,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             if (resultFailure?.class === "usage_limit" && resultFailure.resetAt != null) {
               resetTimes.push(resultFailure.resetAt);
             }
-            const resetAt =
-              resetTimes.length > 0 && resetTimes.every((time) => time !== null)
-                ? resetTimes.reduce((latest, time) => (time! > latest ? time! : latest), "")
-                : null;
+            const resetAt = latestClaudeResetAt(resetTimes);
             const terminalFailure =
               resultFailure?.class === "usage_limit"
                 ? { ...resultFailure, resetAt }

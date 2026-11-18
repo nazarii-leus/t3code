@@ -30,6 +30,7 @@ import * as TestClock from "effect/testing/TestClock";
 import { AgentScope } from "@t3tools/shared/AgentScope";
 
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
+import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as CommandReceiptStore from "./CommandReceiptStore.ts";
@@ -207,6 +208,122 @@ it.effect(
       });
 
       expect(dispatched).toEqual(["message.dispatch"]);
+    }).pipe(Effect.provide(layerTest));
+  },
+);
+
+it.effect.each([
+  { label: "a new turn moves", send: {}, expected: "codex_personal" },
+  {
+    label: "a queued send with nothing running moves",
+    send: { dispatchMode: { type: "queue_after_active" as const } },
+    expected: "codex_personal",
+  },
+  {
+    label: "a steer stays",
+    send: { dispatchMode: { type: "steer_active" as const, targetRunId: RunId.make("run:live") } },
+    expected: "codex_work",
+  },
+  {
+    label: "a limit continuation stays",
+    send: { usageLimitContinuationOfRunId: RunId.make("run:failed") },
+    expected: "codex_work",
+  },
+  {
+    label: "a restart continuation stays",
+    send: { restartContinuationOfRunId: RunId.make("run:failed") },
+    expected: "codex_work",
+  },
+  { label: "a send while a run is live stays", send: {}, live: true, expected: "codex_work" },
+  { label: "a send with the setting off stays", send: {}, off: true, expected: "codex_work" },
+])(
+  "a send to an account that is out of usage: $label",
+  ({ send, expected, live = false, off = false }) => {
+    const work = ProviderInstanceId.make("codex_work");
+    const personal = ProviderInstanceId.make("codex_personal");
+    const dispatched: Array<string | undefined> = [];
+    const account = (instanceId: ProviderInstanceId, usedPercent: number) => ({
+      instanceId,
+      driver: ProviderDriverKind.make("codex"),
+      enabled: true,
+      installed: true,
+      version: null,
+      status: "ready" as const,
+      auth: { status: "authenticated" as const },
+      checkedAt: "2026-09-03T11:00:00.000Z",
+      models: [{ slug: "test", name: "Test", isCustom: false, capabilities: null }],
+      slashCommands: [],
+      skills: [],
+      usageLimits: {
+        checkedAt: "2026-09-03T11:00:00.000Z",
+        windows: [
+          {
+            id: "primary",
+            kind: "session" as const,
+            label: "Session",
+            usedPercent,
+            resetsAt: "2099-01-01T00:00:00.000Z",
+          },
+        ],
+      },
+    });
+    const layerTest = ThreadManagementService.layer.pipe(
+      Layer.provide(Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({})),
+      Layer.provide(
+        Layer.mock(ProviderRegistry.ProviderRegistry)({
+          getProviders: Effect.succeed([account(work, 100), account(personal, 20)]),
+        }),
+      ),
+      Layer.provide(
+        Layer.mock(Orchestrator.OrchestratorV2)({
+          getThreadRecords: () =>
+            Effect.succeed({
+              thread: {
+                id: ThreadId.make("thread:limit-switch"),
+                projectId: ProjectId.make("project:limit-switch"),
+                deletedAt: null,
+                modelSelection: { instanceId: work, model: "test" },
+              },
+              runs: live ? [{ id: RunId.make("run:live"), status: "running" }] : [],
+            } as unknown as OrchestrationV2ThreadProjection),
+          dispatch: (command) =>
+            Effect.sync(() => {
+              dispatched.push(
+                command.type === "message.dispatch"
+                  ? command.modelSelection?.instanceId
+                  : undefined,
+              );
+              return { sequence: 1, storedEvents: [] } as never;
+            }),
+        }),
+      ),
+      Layer.provide(
+        ServerSettings.layerTest({
+          switchAccountsAtUsageLimits: !off,
+          providerInstances: {
+            [work]: { driver: "codex", enabled: true },
+            [personal]: { driver: "codex", enabled: true },
+          },
+        }),
+      ),
+      Layer.provideMerge(layerReceiptsTest),
+    );
+    return Effect.gen(function* () {
+      const threads = yield* ThreadManagementService.ThreadManagementService;
+      yield* threads.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make("command:limit-switch"),
+        threadId: ThreadId.make("thread:limit-switch"),
+        messageId: MessageId.make("message:limit-switch"),
+        text: "Next step.",
+        attachments: [],
+        modelSelection: { instanceId: work, model: "test" },
+        dispatchMode: { type: "start_immediately" },
+        createdBy: "user",
+        creationSource: "web",
+        ...send,
+      });
+      expect(dispatched).toEqual([expected]);
     }).pipe(Effect.provide(layerTest));
   },
 );

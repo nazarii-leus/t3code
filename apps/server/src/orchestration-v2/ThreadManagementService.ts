@@ -45,6 +45,7 @@ import {
 } from "@t3tools/contracts";
 import { delegatedTaskProgress } from "@t3tools/provider-core/server/subagentProjection";
 import { threadTranscriptHeader } from "@t3tools/shared/threadTranscript";
+import { exhaustedUsageWindow, resolveLimitSwitchSelection } from "@t3tools/shared/usageLimits";
 import { AgentScope } from "@t3tools/shared/AgentScope";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -69,6 +70,7 @@ import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
 import { DispatchModeLimit, exceededDispatchModeLimit } from "./DispatchModeLimit.ts";
 import { projectTurnItemForDetail } from "./WireProjection.ts";
 import * as LegacyV1ThreadImporter from "./legacy/LegacyV1ThreadImporter.ts";
+import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { ThreadWorktreeRestore } from "../workspace/restoreMissingWorktree.ts";
 
@@ -613,6 +615,8 @@ const make = Effect.gen(function* () {
   const agentScope = yield* AgentScope;
   const legacyImporter = yield* LegacyV1ThreadImporter.LegacyV1ThreadImporter;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
+  // Optional so the many narrow test layers of this service need no registry; the server has one.
+  const providerRegistry = yield* Effect.serviceOption(ProviderRegistry.ProviderRegistry);
   const receipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
   const worktreeRestore = yield* ThreadWorktreeRestore;
 
@@ -809,10 +813,57 @@ const make = Effect.gen(function* () {
     }
   };
 
+  // A new turn aimed at an account that is out of usage starts on another account that has some.
+  const withLimitSwitch = Effect.fn("ThreadManagementService.withLimitSwitch")(function* (
+    command: OrchestrationV2ServerCommand,
+  ) {
+    if (
+      Option.isNone(providerRegistry) ||
+      command.type !== "message.dispatch" ||
+      command.dispatchMode.type === "steer_active" ||
+      command.dispatchMode.type === "restart_active" ||
+      command.usageLimitContinuationOfRunId !== undefined ||
+      command.restartContinuationOfRunId !== undefined ||
+      command.manualContinuationOfRunId !== undefined ||
+      command.steerFollowUpOfRunId !== undefined ||
+      command.delegatedCompletion !== undefined ||
+      command.idleCompaction !== undefined ||
+      command.notification !== undefined
+    )
+      return command;
+    const settings = yield* serverSettings.getSettings.pipe(Effect.orDie);
+    if (!settings.switchAccountsAtUsageLimits) return command;
+    const { thread, runs } = yield* orchestrator.getThreadRecords(command.threadId, ["runs"], {
+      runStatuses: ["preparing", "starting", "running", "waiting"],
+    });
+    if (runs.length > 0) return command;
+    const selection = command.modelSelection ?? thread.modelSelection;
+    const providers = yield* providerRegistry.value.getProviders;
+    const now = DateTime.toEpochMillis(yield* DateTime.now);
+    const current = providers.find((provider) => provider.instanceId === selection.instanceId);
+    if (!exhaustedUsageWindow(current, now, selection.model)) return command;
+    const switched = resolveLimitSwitchSelection({
+      selection,
+      providers,
+      settings,
+      projectId: thread.projectId,
+      now,
+    });
+    if (switched === null) return command;
+    yield* Effect.logInfo("orchestration-v2.limit-switch.rerouted", {
+      threadId: command.threadId,
+      from: selection.instanceId,
+      to: switched.instanceId,
+    });
+    return { ...command, modelSelection: switched };
+  });
+
   const dispatch: ThreadManagementServiceShape["dispatch"] = (command) =>
     ensureCommandTranscripts(command).pipe(
-      Effect.andThen(assertDispatchTargetEnabled(command)),
-      Effect.andThen(orchestrator.dispatch(command)),
+      Effect.andThen(withLimitSwitch(command)),
+      Effect.flatMap((routed) =>
+        assertDispatchTargetEnabled(routed).pipe(Effect.andThen(orchestrator.dispatch(routed))),
+      ),
     );
 
   const getProjectThreadRecords: ThreadManagementServiceShape["getProjectThreadRecords"] = (

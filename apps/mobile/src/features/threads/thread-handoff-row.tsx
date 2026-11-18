@@ -68,7 +68,13 @@ export function ThreadModelSwitchDivider(props: {
       (model ? resolveModelShortName(model, provider?.driver) : undefined) ??
       model?.name ??
       selection.model;
-    return [change.modelChanged ? modelName : null, effort].filter(Boolean).join(" ");
+    return [
+      change.accountChanged && provider ? resolveProviderInstanceDisplayName(provider) : null,
+      change.modelChanged ? modelName : null,
+      effort,
+    ]
+      .filter(Boolean)
+      .join(" ");
   };
   const { from, to } = props.modelSwitch;
   return (

@@ -212,10 +212,20 @@ describe("model switch change", () => {
         { from: selection("gpt"), to: selection("gpt", { thought_level: "high" }) },
         providers,
       ),
-    ).toEqual({ modelChanged: false, effort: { from: "Medium", to: "High" } });
+    ).toEqual({
+      accountChanged: false,
+      modelChanged: false,
+      effort: { from: "Medium", to: "High" },
+    });
     expect(
       resolveModelSwitchChange({ from: selection("gpt"), to: selection("mini") }, providers),
-    ).toEqual({ modelChanged: true, effort: null });
+    ).toEqual({ accountChanged: false, modelChanged: true, effort: null });
+    expect(
+      resolveModelSwitchChange(
+        { from: selection("gpt"), to: { ...selection("gpt"), instanceId: to } },
+        providers,
+      ),
+    ).toEqual({ accountChanged: true, modelChanged: false, effort: null });
   });
 
   it("ignores changes the user cannot see", () => {
@@ -252,7 +262,7 @@ describe("model switch change", () => {
         },
         [],
       ),
-    ).toEqual({ modelChanged: false, effort: { from: "low", to: "high" } });
+    ).toEqual({ accountChanged: false, modelChanged: false, effort: { from: "low", to: "high" } });
     expect(
       resolveModelSwitchChange(
         {
@@ -261,7 +271,7 @@ describe("model switch change", () => {
         },
         [],
       ),
-    ).toEqual({ modelChanged: false, effort: { from: "low", to: "high" } });
+    ).toEqual({ accountChanged: false, modelChanged: false, effort: { from: "low", to: "high" } });
     expect(
       resolveModelSwitchChange(
         { from: selection("gpt"), to: selection("gpt", { reasoningEffort: "high" }) },

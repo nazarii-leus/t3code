@@ -2,6 +2,7 @@ import { T, Var, msg, useGT, useMessages } from "gt-react";
 import { ThreadHoverCardPopup } from "../ThreadHoverCard";
 import { AgentElapsed } from "./AgentElapsed";
 import { projectedSubagentsToRuntime } from "@t3tools/client-runtime/state/subagentRuntime";
+import { resolveProviderInstanceDisplayName } from "@t3tools/client-runtime/state/provider-instance-display";
 import type { ReactNode } from "react";
 import { useThreadShell, useProject } from "../../state/entities";
 import { useEnvironment } from "../../state/environments";
@@ -651,7 +652,13 @@ export function ModelSwitchRow(props: {
     const provider = providers.find((candidate) => candidate.instanceId === selection.instanceId);
     const model = provider?.models.find((candidate) => candidate.slug === selection.model);
     const modelName = model ? getTriggerDisplayModelName(model, provider?.driver) : selection.model;
-    return [change.modelChanged ? modelName : null, effort].filter(Boolean).join(" ");
+    return [
+      change.accountChanged && provider ? resolveProviderInstanceDisplayName(provider) : null,
+      change.modelChanged ? modelName : null,
+      effort,
+    ]
+      .filter(Boolean)
+      .join(" ");
   };
   const { from, to } = props.modelSwitch;
   return (

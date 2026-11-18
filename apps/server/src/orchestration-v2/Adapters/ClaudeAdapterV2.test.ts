@@ -8321,6 +8321,74 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     ),
   );
 
+  it.effect.each(["requesting", "api-retry-429"] as const)(
+    "fails a turn Claude holds on a rejected limit as that limit when it stalls: %s",
+    (stall) =>
+      Effect.gen(function* () {
+        const harness = yield* makeWakeHarness;
+        const now = yield* DateTime.now;
+        const resetsAt = Math.floor(DateTime.toEpochMillis(now) / 1000) + 7_200;
+        yield* harness.runtime.startTurn(
+          makeClaudeTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now,
+            attemptId: RunAttemptId.make(`attempt-claude-held-limit-${stall}`),
+            text: "Continue.",
+            attachments: [],
+          }),
+        );
+        yield* harness.offerAndWait(
+          claudeSdkFrame({
+            type: "rate_limit_event",
+            rate_limit_info: { status: "rejected", rateLimitType: "five_hour", resetsAt },
+            uuid: "00000000-0000-4000-8000-000000000611",
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
+        yield* harness.offerAndWait(
+          stall === "requesting"
+            ? claudeSdkFrame({
+                type: "system",
+                subtype: "status",
+                status: "requesting",
+                uuid: "00000000-0000-4000-8000-000000000612",
+                session_id: WAKE_NATIVE_SESSION,
+              })
+            : claudeSdkFrame({
+                type: "system",
+                subtype: "api_retry",
+                attempt: 1,
+                max_retries: 10,
+                retry_delay_ms: 60_000,
+                error_status: 429,
+                error: "rate_limit",
+                uuid: "00000000-0000-4000-8000-000000000612",
+                session_id: WAKE_NATIVE_SESSION,
+              }),
+        );
+        yield* TestClock.adjust("10 minutes");
+        // The stop the stall sends goes unconfirmed, so the adapter settles the turn itself.
+        yield* TestClock.adjust("20 seconds");
+        const terminal = yield* Queue.take(harness.terminalReceipts);
+        assert(terminal.status === "failed");
+        assert.equal(terminal.failure.class, "usage_limit");
+        assert.equal(
+          terminal.failure.resetAt,
+          DateTime.formatIso(DateTime.makeUnsafe(resetsAt * 1000)),
+        );
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            NodeCrypto.layer,
+          ),
+        ),
+      ),
+  );
+
   it.effect("keeps a later future-window event-supplied Claude reset over the embedded reset", () =>
     Effect.gen(function* () {
       const harness = yield* makeWakeHarness;
