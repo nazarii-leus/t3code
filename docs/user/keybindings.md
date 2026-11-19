@@ -54,6 +54,13 @@ on macOS and Ctrl on Windows and Linux, including GNOME, KDE Plasma, Niri, and
 Hyprland. If a custom desktop shortcut takes the same keys, choose another binding
 in Settings.
 
+## Sidebar folders
+
+With **Boring sidebar** on, `F8` and `Shift+F8` open the next and previous thread that needs
+you, and `Alt+M` opens **Move to folder** for the selected or open thread. Change them in
+Settings under “Thread: Next That Needs You”, “Thread: Previous That Needs You” and “Thread: Move
+to Folder”.
+
 ## Copy pull request references
 
 With a PR open in the right panel or on the Pull requests page, use `mod+shift+c`

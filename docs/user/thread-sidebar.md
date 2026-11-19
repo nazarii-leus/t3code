@@ -154,11 +154,31 @@ Turn on **Settings → Labs → Boring sidebar (group by project)** on web and d
 threads in a folder for each project. Pinned projects come first. A project with no active
 threads has no folder unless it is pinned or you pick it in the project filter. An archived
 project's folder comes last and shows only while it has active threads. Click a folder to open or
-close it. A closed folder shows how many threads it holds, and a dot when one of them
-needs you. Use the pen button on a folder, or right-click it, to start a thread in that project.
-Pinned threads stay above the folders, and Snoozed and Settled stay below them. In this mode you
-can drag a thread onto the composer to mention it, but not within the sidebar, and the Working
-section is off. Each device keeps its own choice.
+close it. A closed folder counts its threads by state: need you, failed, done and working.
+Use the pen button on a folder, or right-click it, to start a thread in that project.
+Pinned threads stay above the folders, and Snoozed and Settled stay below them. Threads keep
+the order they were started in, newest at the bottom, so nothing moves on its own. The Working
+section is off in this mode. Each device keeps its own choice.
+
+#### Your own folders
+
+Folders of your own sit above the project folders and can hold threads from any project, for
+example Team, Customers and Tasks, with a subfolder such as Customers / PuL. To file a thread,
+drag it onto a folder, or right-click it and choose **Move to folder** (`Alt+M` on the selected
+thread); **New folder…** names a new one in place. Drag a thread onto a project folder, or choose
+**No folder**, to put it back. Moves show an Undo in the sidebar footer.
+
+Right-click a folder to start a thread in it, add a subfolder, rename, sort its threads by
+creation, title or your own order, pick an icon, show only that folder, move it, or remove it.
+Removing a folder puts its threads back under their projects. You can also drag a folder onto
+the top or bottom edge of another to reorder, or onto its middle to nest it. A subfolder with
+one thread shows as that thread's row.
+
+A fork, and a thread started with **New sub-session**, is listed under the thread it came
+from. The counters under the search field list the threads that need you, failed, are done or
+are working; the list holds still until you press Escape. `F8` and `Shift+F8` go to the next
+and previous thread that needs you. Folder order and icons are saved with the environment, so
+agents see them too: they can file the threads they start, and manage folders with `t3_folder`.
 
 ## Settle finished work
 

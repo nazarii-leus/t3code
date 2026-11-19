@@ -4986,7 +4986,7 @@ describe("OrchestratorMcpService thread list", () => {
         statuses: ["preparing", "queued", "starting", "running", "waiting"],
       });
       assert.deepStrictEqual(
-        listed.threads.map((thread) => [thread.threadId, thread.needsYou]),
+        listed.threads.map((thread) => [String(thread.threadId), thread.needsYou]),
         [["thread:a-awaiting-command", true]],
       );
     }).pipe(Effect.provide(service)),

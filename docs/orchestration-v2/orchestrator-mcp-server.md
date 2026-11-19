@@ -355,12 +355,27 @@ provider does not offer is refused, and an inherited or default one steps down
 to the broadest mode it offers. Launch has no retry key, so inspect existing threads after a failed or lost response before
 launching again. `create_threads` remains the batch option for a shared checkout.
 
+Both launch tools take `folder` (`Top` or `Top/Sub`) to file the new thread in a sidebar
+folder, and `parent: "self"` to list it under the calling thread, in the caller's folder unless
+`folder` is given. A folder is a thread tag (`in:<path>`, and `parent:<threadId>` for the
+parent), so it needs no server state of its own. A name that matches an existing folder
+ignoring case takes that folder's spelling.
+
 ### `t3_thread_list`
 
 Lists durable thread shells in one project, newest first: `projectId` when
 given, else the calling thread's project. Callers can filter by title, run
 status, and whether app-owned sub-agent threads are included. Results are
 bounded and offset-paginated. Deleted threads are never listed.
+Each entry reports its sidebar `folder`, the thread it was started under as `subSessionOf`,
+and `needsYou` when it waits for the user (a question, approval, plan, usage limit or guest).
+
+### `t3_folder`
+
+Lists, creates, renames, reorders and removes sidebar folders, and sets a top folder's icon.
+Folder order, icons and sort live in the environment's server setting `sidebarFolders`.
+Renaming or removing a folder retags every thread in it; `t3_thread_organize` with `move` or
+`unfile` files one thread.
 
 ### `t3_thread_read`
 
