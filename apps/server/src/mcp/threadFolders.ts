@@ -46,7 +46,10 @@ export const readThreadFolders = Effect.fn("ThreadFolders.read")(function* (thre
 });
 
 /** An agent's folder name, in an existing folder's spelling when one matches ignoring case. */
-export const resolveThreadFolder = (input: string, known: ReadonlyArray<string>) => {
+export const resolveThreadFolder = (
+  input: string,
+  known: ReadonlyArray<string>,
+): Effect.Effect<string, OrchestratorMcpFailure> => {
   const parsed = parseThreadFolderPath(input);
   return parsed === null
     ? Effect.fail(

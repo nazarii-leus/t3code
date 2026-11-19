@@ -464,34 +464,23 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
       const threads = yield* ThreadManagementService.ThreadManagementService;
       const settings = yield* ServerSettings.ServerSettingsService;
       const { layout, shells, known } = yield* readThreadFolders(threads);
-      const path = () =>
-        required(input.path, "path").pipe(
-          Effect.flatMap((value) => resolveThreadFolder(value, known)),
-        );
       const refuse = (message: string) =>
         Effect.fail(new OrchestratorMcpFailure({ code: "invalid_request", message }));
-      const existing = () =>
-        path().pipe(
-          Effect.filterOrFail(
-            (value) => known.includes(value),
-            (value) =>
-              new OrchestratorMcpFailure({
-                code: "invalid_request",
-                message: `There is no folder "${value}".`,
-              }),
-          ),
-        );
-      const existingTop = () =>
-        existing().pipe(
-          Effect.filterOrFail(
-            (value) => !value.includes("/"),
-            () =>
-              new OrchestratorMcpFailure({
-                code: "invalid_request",
-                message: "Only a top folder can be reordered or given an icon.",
-              }),
-          ),
-        );
+      const path = Effect.fn("mcp.t3Folder.path")(function* () {
+        return yield* resolveThreadFolder(yield* required(input.path, "path"), known);
+      });
+      const existing = Effect.fn("mcp.t3Folder.existing")(function* () {
+        const value = yield* path();
+        if (!known.includes(value)) return yield* refuse(`There is no folder "${value}".`);
+        return value;
+      });
+      const existingTop = Effect.fn("mcp.t3Folder.existingTop")(function* () {
+        const value = yield* existing();
+        if (value.includes("/")) {
+          return yield* refuse("Only a top folder can be reordered or given an icon.");
+        }
+        return value;
+      });
       // Retags every thread under `from`; null takes them out of their folder.
       const retag = (from: string, to: (folder: string) => string | null) =>
         Effect.forEach(
