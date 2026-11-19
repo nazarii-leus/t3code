@@ -1,4 +1,5 @@
 import { msg } from "gt-react-native";
+import { claudeAccountFolder } from "@t3tools/client-runtime/claude-accounts";
 import {
   deriveAvailableInstanceId,
   deriveInstanceId,
@@ -22,6 +23,7 @@ export const DEFAULT_CLAUDE_INSTANCE_ID = defaultInstanceIdForDriver(CLAUDE_DRIV
 export interface ClaudeAccountDraft {
   readonly name: string;
   readonly configDir: string;
+  readonly email?: string;
 }
 
 function configRecord(instance: ProviderInstanceConfig | undefined): Record<string, unknown> {
@@ -29,9 +31,14 @@ function configRecord(instance: ProviderInstanceConfig | undefined): Record<stri
   return config !== null && typeof config === "object" ? (config as Record<string, unknown>) : {};
 }
 
+// Accounts that share the main account's settings keep their own login in the shadow home.
+function folderKey(instance: ProviderInstanceConfig | undefined) {
+  return typeof configRecord(instance).shadowHomePath === "string" ? "shadowHomePath" : "homePath";
+}
+
 export function claudeConfigDir(instance: ProviderInstanceConfig | undefined): string {
-  const homePath = configRecord(instance).homePath;
-  return typeof homePath === "string" ? homePath : "";
+  const folder = configRecord(instance)[folderKey(instance)];
+  return typeof folder === "string" ? folder : "";
 }
 
 /** Adds a Claude instance (`instanceId` null) or edits one, keeping every field the form doesn't show. */
@@ -40,12 +47,15 @@ export function planClaudeAccountSave(input: {
   readonly policy: ManagedPolicySummary | undefined;
   readonly instanceId: ProviderInstanceId | null;
   readonly draft: ClaudeAccountDraft;
+  /** A new account shares the main account's settings and signs in from T3 Code. */
+  readonly sharedAccount?: boolean;
 }): { readonly mutation: ProviderInstanceMutation } | { readonly error: string } {
-  const name = input.draft.name.trim();
+  const email = input.draft.email?.trim() ?? "";
+  const name = input.draft.name.trim() || email;
   const configDir = input.draft.configDir.trim();
   const adding = input.instanceId === null;
   if (adding && name.length === 0) return { error: m(msg("Enter a name for this account.")) };
-  if (adding && configDir.length === 0) {
+  if (adding && !input.sharedAccount && configDir.length === 0) {
     return {
       error: m(
         msg("Enter the {provider} config folder this account is signed in with.", {
@@ -72,8 +82,17 @@ export function planClaudeAccountSave(input: {
     ? input.providerInstances[instanceId]!
     : { driver: CLAUDE_DRIVER };
   const { displayName: _displayName, config: _config, ...rest } = current;
-  const { homePath: _homePath, ...config } = configRecord(current);
-  const nextConfig = configDir ? { ...config, homePath: configDir } : config;
+  const key = folderKey(current);
+  const { [key]: _folder, ...config } = configRecord(current);
+  const nextConfig =
+    adding && input.sharedAccount
+      ? {
+          shadowHomePath: claudeAccountFolder(name, input.providerInstances),
+          ...(email ? { accountEmail: email } : {}),
+        }
+      : configDir
+        ? { ...config, [key]: configDir }
+        : config;
   const instance: ProviderInstanceConfig = {
     ...rest,
     ...(adding ? { enabled: true } : {}),

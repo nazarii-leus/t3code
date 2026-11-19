@@ -13,7 +13,7 @@ import {
   type ServerProvider,
 } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
-import { useRef, useState } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import { Linking, Pressable, ScrollView, TextInput, useWindowDimensions, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { m } from "../../i18n/messages";
@@ -34,7 +34,7 @@ import { ListActionRow as SettingsActionRow } from "../../components/ui/ListActi
 import { useSettingsEnvironmentMenu } from "./components/SettingsEnvironmentFilterHeader";
 import { SettingsScreen } from "./components/SettingsScreen";
 import { SettingsSection } from "./components/SettingsSection";
-import { AddClaudeAccount, ClaudeAccount } from "./ClaudeAccounts";
+import { AddClaudeAccount, ClaudeAccount, useClaudeAccountMenu } from "./ClaudeAccounts";
 import { CLAUDE_DRIVER } from "./claude-accounts";
 import { useSettingsEnvironmentFilter, type SettingsTarget } from "./settings-environment-filter";
 
@@ -94,7 +94,7 @@ function EnvironmentProviders({
   readonly providers: ReadonlyArray<ServerProvider>;
 }) {
   const accounts = providers.filter(canManageProvider);
-  // Claude has no in-app sign-in; each account is its own instance on a signed-in config folder.
+  // Claude signs in from here except on Windows servers, where each account is a signed-in config folder.
   const claudeAccounts = providers.filter(
     (provider) => provider.driver === CLAUDE_DRIVER && !canManageProvider(provider),
   );
@@ -104,14 +104,23 @@ function EnvironmentProviders({
   );
   return (
     <>
-      {accounts.map((provider, index) => (
-        <ProviderAccount
-          key={provider.instanceId}
-          environment={environment}
-          provider={provider}
-          divider={index > 0}
-        />
-      ))}
+      {accounts.map((provider, index) =>
+        provider.driver === CLAUDE_DRIVER ? (
+          <ClaudeProviderAccount
+            key={provider.instanceId}
+            environment={environment}
+            provider={provider}
+            divider={index > 0}
+          />
+        ) : (
+          <ProviderAccount
+            key={provider.instanceId}
+            environment={environment}
+            provider={provider}
+            divider={index > 0}
+          />
+        ),
+      )}
       {accounts.length === 0 ? (
         <Text className="p-4 text-foreground-muted">
           <T>Configure a provider with in-app sign-in in web or desktop Settings.</T>
@@ -120,7 +129,14 @@ function EnvironmentProviders({
       {claudeAccounts.map((provider) => (
         <ClaudeAccount key={provider.instanceId} environment={environment} provider={provider} />
       ))}
-      {canAddClaude ? <AddClaudeAccount environment={environment} /> : null}
+      {canAddClaude ? (
+        <AddClaudeAccount
+          environment={environment}
+          sharedAccount={providers.some(
+            (provider) => provider.driver === CLAUDE_DRIVER && canManageProvider(provider),
+          )}
+        />
+      ) : null}
     </>
   );
 }
@@ -141,14 +157,37 @@ function canManageProvider(provider: ServerProvider) {
   );
 }
 
+function ClaudeProviderAccount(props: {
+  readonly environment: SettingsTarget;
+  readonly provider: ServerProvider;
+  readonly divider: boolean;
+}) {
+  const menu = useClaudeAccountMenu(props.environment, props.provider);
+  return (
+    <ProviderAccount
+      {...props}
+      extraActions={menu.editing ? [] : menu.actions}
+      onExtraAction={menu.onAction}
+    >
+      {menu.panel}
+    </ProviderAccount>
+  );
+}
+
 function ProviderAccount({
   environment,
   provider,
   divider,
+  extraActions = [],
+  onExtraAction,
+  children,
 }: {
   readonly environment: SettingsTarget;
   readonly provider: ServerProvider;
   readonly divider: boolean;
+  readonly extraActions?: ReadonlyArray<MenuAction>;
+  readonly onExtraAction?: (id: string) => void;
+  readonly children?: ReactNode;
 }) {
   const gt = useGT();
   const environmentId = environment.environmentId;
@@ -318,7 +357,8 @@ function ProviderAccount({
     );
   }
   function onMenuAction(id: string) {
-    if (id === "signOut") signOut();
+    if (extraActions.some((action) => action.id === id)) onExtraAction?.(id);
+    else if (id === "signOut") signOut();
     // iOS keeps a disabled submenu's children selectable, so sign-in guards here too.
     else if (signInDisabled) return;
     else if (id.startsWith("remove:")) {
@@ -359,7 +399,25 @@ function ProviderAccount({
           },
         ]
       : []),
+    ...extraActions,
   ];
+  // Signed in, the account menu carries these; otherwise they get their own menu beside Sign in.
+  const extrasMenu =
+    extraActions.length > 0 && !signedIn && !active && !pending ? (
+      <Menu
+        accessible
+        accessibilityRole="button"
+        accessibilityLabel={gt("{provider} account options", { provider: name })}
+        title={name}
+        actions={[...extraActions]}
+        onPressAction={({ nativeEvent }) => onMenuAction(nativeEvent.event)}
+      >
+        <ControlPill
+          icon="ellipsis"
+          accessibilityLabel={gt("{provider} account options", { provider: name })}
+        />
+      </Menu>
+    ) : null;
   const trailing = pending ? (
     <View className="h-11 w-11 items-center justify-center">
       <AppActivityIndicator colorClassName="accent-icon" />
@@ -436,7 +494,14 @@ function ProviderAccount({
         }
       >
         <ProviderAccountSummary key={email} name={name} status={status} email={email} />
-        {trailing}
+        {extrasMenu ? (
+          <View className="flex-row items-center gap-2">
+            {trailing}
+            {extrasMenu}
+          </View>
+        ) : (
+          trailing
+        )}
       </View>
       {interaction?.type === "deviceCode" ||
       interaction?.type === "terminal" ||
@@ -535,6 +600,7 @@ function ProviderAccount({
           }}
         />
       ) : null}
+      {children}
     </View>
   );
 }

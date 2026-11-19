@@ -28,6 +28,26 @@ const preparedAgent = vi.hoisted((): AcpRegistrySearchAgent => ({
   integrity: "sha256",
 }));
 
+vi.mock(import("../../state/server"), async (original) => {
+  const actual = await original();
+  const { Atom } = await import("effect/reactivity");
+  // The server offers Claude sign-in, so the Claude step shows Add Claude account.
+  const providers = Atom.make([
+    {
+      instanceId: "claudeAgent",
+      driver: "claudeAgent",
+      auth: { status: "authenticated" },
+      setup: { canAuthenticate: true, canInstall: false },
+    },
+  ]);
+  return {
+    ...actual,
+    serverEnvironment: {
+      ...actual.serverEnvironment,
+      providersValueAtom: (() => providers) as never,
+    } as never,
+  };
+});
 vi.mock(import("@t3tools/client-runtime/state/runtime"), async (original) => ({
   ...(await original()),
   squashAtomCommandFailure: () => new Error("The settings update failed."),
@@ -168,6 +188,38 @@ describe("AddProviderInstanceDialog environment routing", () => {
         config: { setupMode: "existing" },
       },
     });
+  });
+
+  it("adds a Claude account that shares the main settings, then signs it in", async () => {
+    setup();
+    settingsHooks.read.mockReturnValue({
+      providerInstances: {
+        claudeAgent_old: {
+          driver: "claudeAgent",
+          config: { shadowHomePath: "~/.claude-accounts/office-example-com" },
+        },
+      },
+    });
+    await using _screen = await render(dialog());
+    await act(async () => radio("Claude")!.click());
+    await click("Add Claude account");
+    await type('input[aria-label="Email"]', "office@example.com");
+    await click("Continue to sign-in");
+
+    expect(settingsHooks.mutate).toHaveBeenCalledWith({
+      operation: "create",
+      instanceId: "claudeAgent_office_example_com",
+      instance: {
+        driver: "claudeAgent",
+        enabled: true,
+        displayName: "office@example.com",
+        config: {
+          shadowHomePath: "~/.claude-accounts/office-example-com-2",
+          accountEmail: "office@example.com",
+        },
+      },
+    });
+    expect(signInStep()?.textContent).toContain("remote-device/claudeAgent_office_example_com");
   });
 
   it("includes the explicitly added default accent color when creating a provider", async () => {

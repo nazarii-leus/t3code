@@ -1,4 +1,4 @@
-import { ClaudeSettings, ProviderDriverKind } from "@t3tools/contracts";
+import { ClaudeSettings, ProviderDriverKind, type ServerProvider } from "@t3tools/contracts";
 import * as Cache from "effect/Cache";
 import type * as Cause from "effect/Cause";
 import * as Duration from "effect/Duration";
@@ -58,9 +58,16 @@ import {
 import {
   makeClaudeCapabilitiesCacheKey,
   makeClaudeContinuationGroupKey,
+  makeClaudeEnvironment,
   mergeClaudeProcessEnvironment,
   resolveClaudeHomePath,
 } from "./ClaudeHome.ts";
+import { makeClaudeAuth } from "./ClaudeAuth.ts";
+import {
+  materializeClaudeShadowHome,
+  resolveClaudeShadowHome,
+  type ClaudeShadowHomeError,
+} from "./ClaudeHomeLayout.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { makeClaudeMaintenanceResolution } from "./ClaudeMaintenance.ts";
 const decodeClaudeSettings = Schema.decodeSync(ClaudeSettings);
@@ -119,12 +126,35 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
       .current(DRIVER_KIND)
       .pipe(Effect.map(resolveClaudeModelCatalog));
     const processEnv = yield* mergeClaudeProcessEnvironment(config, environment, process.env);
+    const shadowHome = yield* resolveClaudeShadowHome(config, processEnv);
+    // A shadow home that cannot be prepared leaves the account usable and says why on its row.
+    const shadowHomeProblem = yield* Ref.make<string | undefined>(undefined);
+    const prepareShadowHome =
+      shadowHome === undefined
+        ? Effect.void
+        : materializeClaudeShadowHome(shadowHome).pipe(
+            Effect.matchEffect({
+              onFailure: (error: ClaudeShadowHomeError) =>
+                Ref.set(shadowHomeProblem, error.message).pipe(
+                  Effect.andThen(
+                    Effect.logWarning("Could not prepare the Claude shadow home.", {
+                      detail: error.message,
+                    }),
+                  ),
+                ),
+              onSuccess: () => Ref.set(shadowHomeProblem, undefined),
+            }),
+          );
+    yield* prepareShadowHome;
+    // Everything below runs Claude in the account's own home.
+    const accountConfig =
+      shadowHome === undefined ? config : { ...config, homePath: shadowHome.shadowHomePath };
     const fallbackContinuationIdentity = defaultProviderContinuationIdentity({
       driverKind: DRIVER_KIND,
       instanceId,
     });
     const effectiveConfig = {
-      ...config,
+      ...accountConfig,
       enabled,
       binaryPath: expandHomePath(config.binaryPath, yield* HostProcess.HomeDirectory),
     } satisfies ClaudeSettings;
@@ -180,7 +210,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
         accentColor,
         environment,
         enabled,
-        config,
+        config: accountConfig,
       },
       {
         scopedLimitNames,
@@ -270,7 +300,30 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
       Effect.map((result) => result.capabilities),
     );
 
-    const checkProvider = catalogService.refreshInBackground.pipe(
+    const signInAvailable = (yield* HostProcess.Platform) !== "win32";
+    // `claude auth login` cannot replace an API key, Bedrock or a custom endpoint.
+    const withSignIn = (provider: ServerProvider): ServerProvider =>
+      !signInAvailable || ["apiKey", "bedrock", "customEndpoint"].includes(provider.auth.type ?? "")
+        ? provider
+        : {
+            ...provider,
+            setup: { ...provider.setup, canAuthenticate: true, canInstall: false },
+            ...(provider.auth.status === "unauthenticated"
+              ? { message: "Sign in to use this account." }
+              : {}),
+          };
+
+    const withShadowHomeProblem = (provider: ServerProvider) =>
+      Ref.get(shadowHomeProblem).pipe(
+        Effect.map((problem) =>
+          problem !== undefined && provider.status === "ready"
+            ? { ...provider, status: "warning" as const, message: problem }
+            : provider,
+        ),
+      );
+
+    const checkProvider = prepareShadowHome.pipe(
+      Effect.andThen(catalogService.refreshInBackground),
       Effect.andThen(
         modelCatalog.pipe(
           Effect.flatMap((catalog) =>
@@ -295,6 +348,8 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
               : Effect.void,
           ),
           Effect.map(stampIdentity),
+          Effect.map(withSignIn),
+          Effect.flatMap(withShadowHomeProblem),
         ),
       ),
       // Disabled, failed version checks and interruption never reach the probe.
@@ -314,6 +369,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
         modelCatalog.pipe(
           Effect.flatMap((catalog) => makePendingClaudeProvider(settings.provider, catalog)),
           Effect.map(stampIdentity),
+          Effect.map(withSignIn),
         ),
       checkProvider,
       invalidateUsageCache: Cache.invalidateAll(capabilitiesProbeCache),
@@ -407,9 +463,24 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
       ),
     );
 
+    const auth = signInAvailable
+      ? yield* makeClaudeAuth({
+          instanceId,
+          binaryPath: effectiveConfig.binaryPath,
+          environment: yield* makeClaudeEnvironment(effectiveConfig, processEnv),
+          configDir,
+          cwd: stateDir,
+          accountEmail: effectiveConfig.accountEmail,
+          refresh: Cache.invalidateAll(capabilitiesProbeCache).pipe(
+            Effect.andThen(snapshot.refresh),
+          ),
+        })
+      : undefined;
+
     return {
       instanceId,
       driverKind: DRIVER_KIND,
+      ...(auth ? { auth } : {}),
       continuationIdentity: {
         ...fallbackContinuationIdentity,
         continuationKey: continuationGroupKey,

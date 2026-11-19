@@ -734,6 +734,7 @@ interface ProviderInstanceCardProps {
   readonly onInstallRecommended?: (() => void) | undefined;
   readonly isUpdating?: boolean | undefined;
   readonly onAcceptUrlAuth?: ((action: AcpRegistryUrlAuthAction) => void) | undefined;
+  readonly onSignIn?: (() => void) | undefined;
   readonly environmentId?: EnvironmentId | undefined;
   readonly secretSources?: ReadonlyArray<SecretSource>;
   readonly projectOverride?: ProjectOverrideControl | undefined;
@@ -805,6 +806,7 @@ export function ProviderInstanceCard({
   onInstallRecommended,
   isUpdating = false,
   onAcceptUrlAuth,
+  onSignIn,
   environmentId,
   acpProjects = EMPTY_ACP_PROJECTS,
   secretSources = NO_SECRET_SOURCES,
@@ -1235,6 +1237,11 @@ export function ProviderInstanceCard({
           </span>
         </div>
         <span className="pointer-events-none relative flex h-5 shrink-0 items-center gap-1 *:pointer-events-auto">
+          {onSignIn ? (
+            <Button size="xs" variant="outline" onClick={onSignIn}>
+              <T>Sign in</T>
+            </Button>
+          ) : null}
           {projectOverride?.value !== undefined ? (
             <span className="flex items-center">
               <ProjectOverrideInheritance

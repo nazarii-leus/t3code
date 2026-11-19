@@ -33,6 +33,7 @@ const state = vi.hoisted(() => ({
   updateProvider: vi.fn(),
   uninstall: vi.fn(),
   acceptUrlAuth: vi.fn(),
+  startAuth: vi.fn(),
   updateSettings: vi.fn(),
   updateModelPreferences: vi.fn(),
   toggleFavorite: vi.fn(),
@@ -53,6 +54,7 @@ vi.mock(import("../../state/server"), async (original) => {
     updateProvider: "update",
     uninstallAcpRegistryManagedBinary: "uninstall",
     acceptAcpRegistryUrlAuth: "accept-url-auth",
+    startProviderAuth: "start-auth",
   } as const;
   const labelled = Object.fromEntries(
     Object.entries(commandLabels).map(([key, label]) => [
@@ -80,6 +82,7 @@ vi.mock(import("../../state/use-atom-command"), async (original) => ({
       update: state.updateProvider,
       uninstall: state.uninstall,
       "accept-url-auth": state.acceptUrlAuth,
+      "start-auth": state.startAuth,
     })[command.label ?? ""] ?? vi.fn()) as never,
 }));
 vi.mock(import("~/localApi"), async (original) => {
@@ -246,6 +249,7 @@ async function setup() {
   state.updateProvider.mockReset().mockResolvedValue(AsyncResult.success(undefined));
   state.uninstall.mockReset().mockResolvedValue(AsyncResult.success({}));
   state.acceptUrlAuth.mockReset().mockResolvedValue(AsyncResult.success({ accepted: true }));
+  state.startAuth.mockReset().mockResolvedValue(AsyncResult.success({}));
   await setProviders([]);
 }
 
@@ -480,6 +484,33 @@ describe("EnvironmentProviderSettings provider list", () => {
     await userEvent.click(row, { position: { x: 3, y: 3 } });
 
     await expect.element(select).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("starts a signed-out account's sign-in from its row and opens the account", async () => {
+    await setup();
+    const claudeId = ProviderInstanceId.make("claudeAgent");
+    await setProviders([
+      provider(),
+      {
+        ...provider(),
+        instanceId: claudeId,
+        driver: ProviderDriverKind.make("claudeAgent"),
+        status: "error",
+        auth: { status: "unauthenticated" },
+        setup: { canAuthenticate: true, canInstall: false },
+      },
+    ]);
+    await using _screen = await render(panel());
+
+    await userEvent.click(page.getByRole("button", { name: "Sign in" }));
+
+    expect(state.startAuth).toHaveBeenCalledWith({
+      environmentId,
+      input: { instanceId: claudeId },
+    });
+    await expect
+      .element(page.getByRole("button", { name: "Select Claude" }))
+      .toHaveAttribute("aria-pressed", "true");
   });
 });
 

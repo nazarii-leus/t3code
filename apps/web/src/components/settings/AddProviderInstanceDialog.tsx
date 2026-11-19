@@ -2,6 +2,7 @@ import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
 import { m as resolveMessage } from "~/i18n/messages";
 import { ProviderInstanceIcon } from "../chat/ProviderInstanceIcon";
 
+import { useAtomValue } from "@effect/atom-react";
 import { Radio as RadioPrimitive } from "@base-ui/react/radio";
 import { CheckIcon, ChevronDownIcon } from "lucide-react";
 import { useState } from "react";
@@ -32,6 +33,7 @@ import {
 import { cn } from "../../lib/utils";
 import { normalizeProviderAccentColor } from "../../providerInstances";
 import { managedInstanceLocks, useManagedPolicy } from "../../state/managedPolicy";
+import { serverEnvironment } from "../../state/server";
 import { readEnvironmentScope, useEnvironmentScope } from "../../state/session";
 import { Button } from "../ui/button";
 import { ChatGptConnectionButton } from "./ChatGptConnectionButton";
@@ -62,6 +64,7 @@ import { AcpRegistrySearchStep, useAcpRegistrySearch } from "./AcpRegistrySearch
 import { ProviderWizardAuthenticationStep } from "./ProviderWizardAuthenticationStep";
 import { resolveOfficialAcpRegistryIconUrl } from "./AcpRegistryIcon";
 import { AddManagedCodexAccountDialog } from "./CodexSetupSection";
+import { AddClaudeAccountDialog } from "./AddClaudeAccountDialog";
 import { MultipleAccountsNote } from "./MultipleAccountsNote";
 import { ProviderEnvironmentSection } from "./ProviderInstanceCard";
 import { useSecretSources } from "./SecretSourceInput";
@@ -172,6 +175,12 @@ export function AddProviderInstanceDialog({
 
   const [wizardStep, setWizardStep] = useState(0);
   const [addingChatGptAccount, setAddingChatGptAccount] = useState(false);
+  const [addingClaudeAccount, setAddingClaudeAccount] = useState(false);
+  // Windows servers cannot sign Claude in, so an account added here would stay signed out.
+  const claudeSignIn =
+    useAtomValue(serverEnvironment.providersValueAtom(environmentId))?.some(
+      (provider) => provider.driver === "claudeAgent" && provider.setup?.canAuthenticate,
+    ) ?? false;
   // Drivers the administrator's policy leaves out are not offered at all.
   const managedPolicy = useManagedPolicy(environmentId);
   const featuredDriverOptions = FEATURED_DRIVER_OPTIONS.filter((option) =>
@@ -213,6 +222,7 @@ export function AddProviderInstanceDialog({
   const showRegistrySearch =
     !createdInstanceId &&
     !addingChatGptAccount &&
+    !addingClaudeAccount &&
     wizardStep === 0 &&
     !(isAcpRegistry && isManualAcpConfiguration);
   // Searches while Show more is closed, so the fold opens on results.
@@ -447,6 +457,17 @@ export function AddProviderInstanceDialog({
         environmentId={environmentId}
         onClose={() => onOpenChange(false)}
         onAccountCreated={(instanceId) => onCreated?.(instanceId, ProviderDriverKind.make("codex"))}
+      />
+    );
+  }
+
+  if (addingClaudeAccount) {
+    return (
+      <AddClaudeAccountDialog
+        environmentId={environmentId}
+        environmentLabel={environmentLabel}
+        onClose={() => onOpenChange(false)}
+        onCreated={(instanceId) => onCreated?.(instanceId, ProviderDriverKind.make("claudeAgent"))}
       />
     );
   }
@@ -782,6 +803,15 @@ export function AddProviderInstanceDialog({
                       onClick={() => setAddingChatGptAccount(true)}
                     />
                   )}
+                </>
+              ) : wizardStep === 0 && driver === "claudeAgent" && claudeSignIn ? (
+                <>
+                  <Button variant="outline" size="sm" onClick={() => navigateToStep(1)}>
+                    <T>Configure manually</T>
+                  </Button>
+                  <Button size="sm" onClick={() => setAddingClaudeAccount(true)}>
+                    <T>Add Claude account</T>
+                  </Button>
                 </>
               ) : wizardStep < (isAcpRegistry ? 1 : 2) ? (
                 <Button

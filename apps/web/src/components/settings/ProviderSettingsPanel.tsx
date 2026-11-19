@@ -607,6 +607,9 @@ export function EnvironmentProviderSettings({
   const acceptAcpRegistryUrlAuth = useAtomCommand(serverEnvironment.acceptAcpRegistryUrlAuth, {
     reportFailure: false,
   });
+  const startProviderAuth = useAtomCommand(serverEnvironment.startProviderAuth, {
+    reportFailure: false,
+  });
   const [isRefreshingProviders, setIsRefreshingProviders] = useState(false);
   const [isAddInstanceDialogOpen, setIsAddInstanceDialogOpen] = useState(false);
   const [selectedInstanceId, setSelectedInstanceId] = useState<ProviderInstanceId | null>(
@@ -961,6 +964,23 @@ export function EnvironmentProviderSettings({
     },
   );
 
+  // The selected card's sign-in section follows the started flow and offers the browser link.
+  const signIn = useStableCallback((instanceId: ProviderInstanceId) => {
+    setSelectedInstanceId(instanceId);
+    void startProviderAuth({ environmentId, input: { instanceId } }).then((result) => {
+      if (result._tag !== "Failure" || isAtomCommandInterrupted(result)) return;
+      const error = squashAtomCommandFailure(result);
+      toastManager.add({
+        type: "error",
+        title: gt("Could not start sign-in"),
+        description:
+          error instanceof Error
+            ? (thrownErrorMessage(error, resolveNow) ?? error.message)
+            : gt("Provider sign-in failed. Try again."),
+      });
+    });
+  });
+
   const stableUpdateModelPreferences = useStableCallback(updateModelPreferences);
   const stableToggleModelFavorite = useStableCallback(toggleModelFavorite);
   const actions: ProviderInstanceRowActions = {
@@ -974,6 +994,7 @@ export function EnvironmentProviderSettings({
     updateModelPreferences: stableUpdateModelPreferences,
     toggleModelFavorite: stableToggleModelFavorite,
     selectInstance: setSelectedInstanceId,
+    signIn,
   };
   // resolveModelPreferences falls back to a fresh `[]`; keep it stable for the rows.
   const favorites = settings.favorites.length > 0 ? settings.favorites : NO_FAVORITES;
@@ -1282,6 +1303,7 @@ interface ProviderInstanceRowActions {
   readonly updateModelPreferences: ReturnType<typeof useUpdateEnvironmentModelPreferences>;
   readonly toggleModelFavorite: ReturnType<typeof useToggleEnvironmentModelFavorite>;
   readonly selectInstance: (instanceId: ProviderInstanceId) => void;
+  readonly signIn: (instanceId: ProviderInstanceId) => void;
 }
 
 const NO_MODELS: ReadonlyArray<string> = [];
@@ -1384,6 +1406,15 @@ function ProviderInstanceRow({
       mode={mode}
       selected={selected}
       onSelect={mode === "list" ? () => actions.selectInstance(instanceId) : undefined}
+      onSignIn={
+        mode === "list" &&
+        !readOnly &&
+        liveProvider?.enabled &&
+        liveProvider.setup?.canAuthenticate &&
+        liveProvider.auth.status === "unauthenticated"
+          ? () => actions.signIn(instanceId)
+          : undefined
+      }
       readOnly={readOnly}
       runtime={
         mode === "editor" && codexSetupMode === "managed" ? (

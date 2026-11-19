@@ -886,6 +886,11 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
     parsedVersion
       ? yield* resolveResetCredits(parsedVersion)
       : undefined;
+  const expectedEmail = claudeSettings.accountEmail.trim();
+  const wrongAccount =
+    expectedEmail.length > 0 &&
+    capabilities.email !== undefined &&
+    capabilities.email.toLowerCase() !== expectedEmail.toLowerCase();
   return buildServerProvider({
     presentation: CLAUDE_PRESENTATION,
     enabled: claudeSettings.enabled,
@@ -897,14 +902,20 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
     probe: {
       installed: true,
       version: parsedVersion,
-      status: "ready",
+      status: wrongAccount ? "warning" : "ready",
       auth: {
         status: "authenticated",
         ...(capabilities.email ? { email: capabilities.email } : {}),
         ...(capabilities.workspaceId ? { workspaceId: capabilities.workspaceId } : {}),
         ...(authMetadata ? authMetadata : {}),
       },
-      ...(versionUpgradeMessage ? { message: versionUpgradeMessage } : {}),
+      ...(wrongAccount
+        ? {
+            message: `Signed in as ${capabilities.email}, not ${expectedEmail}. Sign in again with ${expectedEmail}.`,
+          }
+        : versionUpgradeMessage
+          ? { message: versionUpgradeMessage }
+          : {}),
       usageLimits: resetCredits ? { ...usageLimits, resetCredits } : usageLimits,
     },
   });

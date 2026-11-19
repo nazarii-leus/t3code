@@ -12,19 +12,20 @@ const claude = ProviderDriverKind.make("claudeAgent");
 const work = ProviderInstanceId.make("claudeAgent_work");
 
 describe("planClaudeAccountSave", () => {
-  it("adds a signed-in config folder as a new Claude instance with a free id", () => {
+  it("adds an account that shares the main settings in a free folder and id", () => {
     const providerInstances: ServerSettings["providerInstances"] = {
-      [work]: { driver: claude, config: { homePath: "~/.claude-work" } },
+      [work]: { driver: claude, config: { shadowHomePath: "~/.claude-accounts/work" } },
     };
-    const plan = (name: string, configDir: string) =>
+    const plan = (name: string, email: string) =>
       planClaudeAccountSave({
         providerInstances,
         policy: undefined,
         instanceId: null,
-        draft: { name, configDir },
+        draft: { name, configDir: "", email },
+        sharedAccount: true,
       });
 
-    expect(plan(" Work ", " ~/.claude-willy ")).toEqual({
+    expect(plan(" Work ", " office@example.com ")).toEqual({
       mutation: {
         operation: "create",
         instanceId: "claudeAgent_work_2",
@@ -32,12 +33,31 @@ describe("planClaudeAccountSave", () => {
           driver: "claudeAgent",
           enabled: true,
           displayName: "Work",
-          config: { homePath: "~/.claude-willy" },
+          config: {
+            shadowHomePath: "~/.claude-accounts/work-2",
+            accountEmail: "office@example.com",
+          },
         },
       },
     });
-    expect(plan("", "~/.claude-willy")).toHaveProperty("error");
-    expect(plan("Willy", " ")).toHaveProperty("error");
+    expect(plan("", "office@example.com")).toMatchObject({
+      mutation: { instance: { displayName: "office@example.com" } },
+    });
+    expect(plan("", " ")).toHaveProperty("error");
+  });
+
+  it("adds a signed-in config folder where the server cannot sign Claude in", () => {
+    const plan = (configDir: string) =>
+      planClaudeAccountSave({
+        providerInstances: {},
+        policy: undefined,
+        instanceId: null,
+        draft: { name: "Work", configDir },
+      });
+    expect(plan(" ~/.claude-work ")).toMatchObject({
+      mutation: { instance: { config: { homePath: "~/.claude-work" } } },
+    });
+    expect(plan(" ")).toHaveProperty("error");
   });
 
   it("edits the name and folder without dropping the instance's other settings", () => {
@@ -97,6 +117,29 @@ describe("planClaudeAccountSave", () => {
       }),
     ).toEqual({
       mutation: { operation: "upsert", instanceId: work, instance: { driver: claude } },
+    });
+  });
+
+  it("edits the folder of an account that shares the main settings", () => {
+    expect(
+      planClaudeAccountSave({
+        providerInstances: {
+          [work]: { driver: claude, config: { shadowHomePath: "~/.claude-accounts/work" } },
+        },
+        policy: undefined,
+        instanceId: work,
+        draft: { name: "Work", configDir: "~/.claude-accounts/office" },
+      }),
+    ).toEqual({
+      mutation: {
+        operation: "upsert",
+        instanceId: work,
+        instance: {
+          driver: claude,
+          displayName: "Work",
+          config: { shadowHomePath: "~/.claude-accounts/office" },
+        },
+      },
     });
   });
 

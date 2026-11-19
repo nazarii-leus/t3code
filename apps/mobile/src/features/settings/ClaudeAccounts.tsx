@@ -64,28 +64,13 @@ function useProviderInstanceMutation(environment: SettingsTarget) {
   return { run, pending, error, setError };
 }
 
-export function ClaudeAccount({
-  environment,
-  provider,
-}: {
-  readonly environment: SettingsTarget;
-  readonly provider: ServerProvider;
-}) {
+/** A Claude account's Edit and Remove actions, and the form or error they show under its row. */
+export function useClaudeAccountMenu(environment: SettingsTarget, provider: ServerProvider) {
   const gt = useGT();
   const [editing, setEditing] = useState(false);
   const { run, pending, error } = useProviderInstanceMutation(environment);
   const instance = environment.serverConfig.settings.providerInstances[provider.instanceId];
-  const configDir = claudeConfigDir(instance);
   const name = provider.displayName ?? "Claude";
-  const status = !provider.enabled
-    ? gt("Turned off")
-    : provider.auth.status === "authenticated"
-      ? gt("Signed in")
-      : provider.auth.status === "unauthenticated"
-        ? gt("Not signed in")
-        : !provider.installed
-          ? gt("Not installed")
-          : null;
   const removable =
     provider.instanceId !== DEFAULT_CLAUDE_INSTANCE_ID &&
     !isManagedSettingPath(
@@ -124,55 +109,92 @@ export function ClaudeAccount({
       ],
     );
   }
+  return {
+    name,
+    pending,
+    editing,
+    actions,
+    configDir: claudeConfigDir(instance),
+    onAction(id: string) {
+      if (pending) return;
+      if (id === "edit") setEditing(true);
+      else if (id === "remove") remove();
+    },
+    panel: editing ? (
+      <ClaudeAccountForm
+        environment={environment}
+        instanceId={provider.instanceId}
+        initial={{ name: instance?.displayName ?? "", configDir: claudeConfigDir(instance) }}
+        onDone={() => setEditing(false)}
+      />
+    ) : error ? (
+      <Text accessibilityRole="alert" className="px-4 pb-3 text-danger-foreground">
+        {error}
+      </Text>
+    ) : null,
+  };
+}
+
+/** A Claude account on a server where T3 Code cannot sign it in. */
+export function ClaudeAccount({
+  environment,
+  provider,
+}: {
+  readonly environment: SettingsTarget;
+  readonly provider: ServerProvider;
+}) {
+  const gt = useGT();
+  const menu = useClaudeAccountMenu(environment, provider);
+  const status = !provider.enabled
+    ? gt("Turned off")
+    : provider.auth.status === "authenticated"
+      ? gt("Signed in")
+      : provider.auth.status === "unauthenticated"
+        ? gt("Not signed in")
+        : !provider.installed
+          ? gt("Not installed")
+          : null;
   return (
     <View className="border-t border-border-subtle">
       <View className="min-h-16 flex-row items-center gap-3 px-4 py-3">
         <View className="min-w-0 shrink grow gap-0.5">
           <Text textRole="body" className="text-foreground" numberOfLines={1}>
-            {name}
+            {menu.name}
           </Text>
           <Text textRole="footnote" className="text-foreground-muted" numberOfLines={2}>
-            {[status, configDir || gt("Default config folder")].filter(Boolean).join(" · ")}
+            {[status, menu.configDir || gt("Default config folder")].filter(Boolean).join(" · ")}
           </Text>
         </View>
-        {editing ? null : (
+        {menu.editing ? null : (
           <Menu
             accessible
             accessibilityRole="button"
-            accessibilityLabel={gt("{account} options", { account: name })}
-            title={name}
-            actions={actions}
-            onPressAction={({ nativeEvent }) => {
-              if (pending) return;
-              if (nativeEvent.event === "edit") setEditing(true);
-              else if (nativeEvent.event === "remove") remove();
-            }}
+            accessibilityLabel={gt("{account} options", { account: menu.name })}
+            title={menu.name}
+            actions={menu.actions}
+            onPressAction={({ nativeEvent }) => menu.onAction(nativeEvent.event)}
           >
             <ControlPill
               icon="ellipsis"
-              accessibilityLabel={gt("{account} options", { account: name })}
-              disabled={pending}
+              accessibilityLabel={gt("{account} options", { account: menu.name })}
+              disabled={menu.pending}
             />
           </Menu>
         )}
       </View>
-      {editing ? (
-        <ClaudeAccountForm
-          environment={environment}
-          instanceId={provider.instanceId}
-          initial={{ name: instance?.displayName ?? "", configDir }}
-          onDone={() => setEditing(false)}
-        />
-      ) : error ? (
-        <Text accessibilityRole="alert" className="px-4 pb-3 text-danger-foreground">
-          {error}
-        </Text>
-      ) : null}
+      {menu.panel}
     </View>
   );
 }
 
-export function AddClaudeAccount({ environment }: { readonly environment: SettingsTarget }) {
+export function AddClaudeAccount({
+  environment,
+  sharedAccount,
+}: {
+  readonly environment: SettingsTarget;
+  /** The server signs Claude in, so a new account shares the main account's settings. */
+  readonly sharedAccount: boolean;
+}) {
   const gt = useGT();
   const [adding, setAdding] = useState(false);
   return (
@@ -181,17 +203,23 @@ export function AddClaudeAccount({ environment }: { readonly environment: Settin
         <ClaudeAccountForm
           environment={environment}
           instanceId={null}
-          initial={{ name: "", configDir: "" }}
+          initial={{ name: "", configDir: "", email: "" }}
+          sharedAccount={sharedAccount}
           onDone={() => setAdding(false)}
         />
       ) : (
         <ListActionRow
           icon="plus"
           label={gt("Add {provider} account", { provider: "Claude" })}
-          description={gt(
-            "Use a {provider} config folder that is already signed in on this server.",
-            { provider: "Claude" },
-          )}
+          description={
+            sharedAccount
+              ? gt(
+                  "Shares settings, skills and chats with the main account and signs in on its own.",
+                )
+              : gt("Use a {provider} config folder that is already signed in on this server.", {
+                  provider: "Claude",
+                })
+          }
           onPress={() => setAdding(true)}
         />
       )}
@@ -203,11 +231,13 @@ function ClaudeAccountForm({
   environment,
   instanceId,
   initial,
+  sharedAccount = false,
   onDone,
 }: {
   readonly environment: SettingsTarget;
   readonly instanceId: ProviderInstanceId | null;
   readonly initial: ClaudeAccountDraft;
+  readonly sharedAccount?: boolean;
   readonly onDone: () => void;
 }) {
   const gt = useGT();
@@ -219,6 +249,7 @@ function ClaudeAccountForm({
       policy: environment.serverConfig.managedPolicy,
       instanceId,
       draft,
+      sharedAccount,
     });
     if ("error" in plan) {
       setError(plan.error);
@@ -228,7 +259,7 @@ function ClaudeAccountForm({
       if (saved) onDone();
     });
   }
-  function field(key: keyof ClaudeAccountDraft, label: string, placeholder: string) {
+  function field(key: "name" | "configDir" | "email", label: string, placeholder: string) {
     return (
       <TextInput
         accessibilityLabel={label}
@@ -238,30 +269,34 @@ function ClaudeAccountForm({
         autoCapitalize="none"
         autoCorrect={false}
         editable={!pending}
-        value={draft[key]}
+        value={draft[key] ?? ""}
         onChangeText={(value) => setDraft((current) => ({ ...current, [key]: value }))}
       />
     );
   }
   return (
     <View className="gap-2 px-4 py-3">
-      <Text textRole="footnote" className="text-foreground-muted">
-        {gt(
-          "Point at a {variable} folder on {environment} where {product} is already signed in. Sign in there with the {cli} first.",
-          {
-            variable: "CLAUDE_CONFIG_DIR",
-            environment: environment.label,
-            product: "Claude Code",
-            cli: "Claude CLI",
-          },
-        )}
-      </Text>
+      {instanceId === null && !sharedAccount ? (
+        <Text textRole="footnote" className="text-foreground-muted">
+          {gt(
+            "Point at a {variable} folder on {environment} where {product} is already signed in. Sign in there with the {cli} first.",
+            {
+              variable: "CLAUDE_CONFIG_DIR",
+              environment: environment.label,
+              product: "Claude Code",
+              cli: "Claude CLI",
+            },
+          )}
+        </Text>
+      ) : null}
       {field("name", gt("Account name"), gt("Name, e.g. Work"))}
-      {field(
-        "configDir",
-        gt("{provider} config folder", { provider: "Claude" }),
-        gt("Config folder, e.g. {path}", { path: "~/.claude-work" }),
-      )}
+      {instanceId === null && sharedAccount
+        ? field("email", gt("Email"), gt("Email, fills in the sign-in page"))
+        : field(
+            "configDir",
+            gt("{provider} config folder", { provider: "Claude" }),
+            gt("Config folder, e.g. {path}", { path: "~/.claude-work" }),
+          )}
       {error ? (
         <Text accessibilityRole="alert" className="text-danger-foreground">
           {error}
