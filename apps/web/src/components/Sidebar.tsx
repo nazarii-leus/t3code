@@ -7,6 +7,8 @@ import {
   type ScopedProjectRef,
   type SidebarFolderEntry,
   threadFolderOf,
+  threadFolderTag,
+  threadParentTag,
 } from "@t3tools/contracts";
 import type { EnvironmentServerConfig } from "@t3tools/client-runtime/connection";
 import {
@@ -1509,6 +1511,18 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     readonly keys: ReadonlyArray<string>;
   } | null>(null);
   const [onlyFolder, setOnlyFolder] = useState<string | null>(null);
+  // A new thread in a folder runs in the project of the folder's newest thread.
+  const startThreadInUserFolder = useStableCallback((path: string) => {
+    const newest = listedThreads
+      .filter((thread) => threadFolderOf(thread.source.tags)?.path === path)
+      .toSorted((left, right) => (left.createdAt < right.createdAt ? 1 : -1))[0];
+    const projectRef = newest
+      ? scopeProjectRef(newest.environmentId, newest.projectId)
+      : newThreadContext.defaultProjectRef;
+    if (!projectRef) return;
+    if (isMobile) setOpenMobile(false);
+    void handleNewThread(projectRef, { tags: [threadFolderTag(path)] });
+  });
   const folderActions = useSidebarFolderActions({
     folders: folderTree?.folders ?? EMPTY_USER_FOLDERS,
     childrenByParentKey: folderTree?.childrenByParentKey ?? EMPTY_CHILDREN,
@@ -1517,7 +1531,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     layoutWritable: sidebarFolderLayout.available,
     saveLayout: sidebarFolderLayout.save,
     moveThreadToFolder,
-    onNewThreadInFolder: null,
+    onNewThreadInFolder: startThreadInUserFolder,
     onShowOnly: setOnlyFolder,
   });
   const attentionCounts = countSidebarThreadsByClass([...classByKey.values()], (cls) => cls);
@@ -2929,6 +2943,26 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                 projectId: thread.projectId,
               });
             return;
+          case "new-sub-session":
+          case "new-in-folder": {
+            const folder = threadFolderOf(thread.source.tags)?.path ?? null;
+            if (clicked.value === "new-in-folder") {
+              if (folder !== null) startThreadInUserFolder(folder);
+              return;
+            }
+            // Under its parent, on the parent's branch and checkout, in the parent's folder.
+            void handleNewThread(scopeProjectRef(thread.environmentId, thread.projectId), {
+              branch: thread.branch,
+              worktreePath: thread.worktreePath,
+              envMode: thread.worktreePath ? "worktree" : "local",
+              startFromOrigin: false,
+              tags: [
+                threadParentTag(thread.id),
+                ...(folder === null ? [] : [threadFolderTag(folder)]),
+              ],
+            });
+            return;
+          }
           case "new-thread-on-branch": {
             const result = await settlePromise(() =>
               handleNewThread(scopeProjectRef(thread.environmentId, thread.projectId), {
@@ -3906,7 +3940,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                                   parentRowId={row.parentRowId}
                                   edit={folderActions.editFor(`rename:${row.path}`)}
                                   onToggle={toggleUserFolder}
-                                  onNewThread={null}
+                                  onNewThread={startThreadInUserFolder}
                                   onContextMenu={folderActions.openFolderMenu}
                                 />,
                               );

@@ -102,6 +102,8 @@ export function createNewThreadHandler(router: AnyRouter) {
       replace?: boolean;
       /** Composer text for the draft, set before it shows. A draft with user text keeps it. */
       prompt?: string;
+      /** Tags the thread is born with, such as its sidebar folder; replaces a reused draft's. */
+      tags?: ReadonlyArray<string>;
     },
   ): Promise<{ draftId: DraftId; threadId: ThreadId } | null> => {
     const projects = readProjects();
@@ -329,6 +331,7 @@ export function createNewThreadHandler(router: AnyRouter) {
           emptyStoredDraftThread.draftId,
           {
             threadId: emptyStoredDraftThread.threadId,
+            tags: options?.tags ?? [],
             ...workspaceContext,
             ...(!isDraftAlreadyOpen ? { runtimeMode: defaultRuntimeMode } : {}),
             ...(carryInteractionMode ? { interactionMode: carryInteractionMode } : {}),
@@ -372,6 +375,7 @@ export function createNewThreadHandler(router: AnyRouter) {
       }
       setLogicalProjectDraftThreadId(logicalProjectKey, projectRef, currentRouteTarget.draftId, {
         threadId: latestActiveDraftThread.threadId,
+        tags: options?.tags ?? [],
         createdAt: latestActiveDraftThread.createdAt,
         runtimeMode: latestActiveDraftThread.runtimeMode,
         interactionMode: latestActiveDraftThread.interactionMode,
@@ -401,6 +405,7 @@ export function createNewThreadHandler(router: AnyRouter) {
       ) {
         setLogicalProjectDraftThreadId(logicalProjectKey, projectRef, racedDraft.draftId, {
           threadId: racedDraft.threadId,
+          tags: options?.tags ?? [],
           createdAt: racedDraft.createdAt,
           runtimeMode: racedDraft.runtimeMode,
           interactionMode: racedDraft.interactionMode,
@@ -417,6 +422,7 @@ export function createNewThreadHandler(router: AnyRouter) {
       setLogicalProjectDraftThreadId(logicalProjectKey, projectRef, draftId, {
         threadId,
         createdAt,
+        tags: options?.tags ?? [],
         branch: options?.branch ?? null,
         worktreePath: options?.worktreePath ?? null,
         envMode: initialEnvMode,

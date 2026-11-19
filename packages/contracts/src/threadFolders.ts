@@ -28,7 +28,7 @@ export function parseThreadFolderPath(input: string): ThreadFolderPath | null {
   return { path: sub === null ? top : `${top}/${sub}`, top, sub };
 }
 
-const threadFolderTag = (path: string) => `${THREAD_FOLDER_TAG_PREFIX}${path}`;
+export const threadFolderTag = (path: string) => `${THREAD_FOLDER_TAG_PREFIX}${path}`;
 export const threadParentTag = (threadId: string) => `${THREAD_PARENT_TAG_PREFIX}${threadId}`;
 
 /** A move adds the new tag before removing the old one, so the last valid tag is the folder. */

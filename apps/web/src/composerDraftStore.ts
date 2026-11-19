@@ -420,6 +420,7 @@ const PersistedDraftThreadState = Schema.Struct({
   checkoutPullRequest: Schema.optionalKey(
     Schema.Struct({ url: Schema.String, branch: Schema.String }),
   ),
+  tags: Schema.optionalKey(Schema.Array(Schema.String)),
   promotedTo: Schema.optionalKey(
     Schema.NullOr(
       Schema.Struct({
@@ -518,6 +519,8 @@ export interface DraftSessionState {
   startFromOrigin: boolean;
   /** Linked to the thread when the draft is sent on this branch. */
   checkoutPullRequest?: DraftCheckoutPullRequest;
+  /** Tags the thread is born with: its sidebar folder, or the thread it was started under. */
+  tags?: ReadonlyArray<string>;
   promotedTo?: ScopedThreadRef | null;
 }
 
@@ -591,6 +594,7 @@ interface ComposerDraftStoreState {
       environmentSelection?: "auto" | "manual";
       loadBalancedEnvironmentId?: EnvironmentId | null;
       checkoutPullRequest?: DraftCheckoutPullRequest | null;
+      tags?: ReadonlyArray<string>;
     },
   ) => void;
   setProjectDraftThreadId: (
@@ -608,6 +612,7 @@ interface ComposerDraftStoreState {
       environmentSelection?: "auto" | "manual";
       loadBalancedEnvironmentId?: EnvironmentId | null;
       checkoutPullRequest?: DraftCheckoutPullRequest | null;
+      tags?: ReadonlyArray<string>;
     },
   ) => void;
   setDraftThreadContext: (
@@ -1718,6 +1723,7 @@ function createDraftThreadState(
     environmentSelection?: "auto" | "manual";
     loadBalancedEnvironmentId?: EnvironmentId | null;
     checkoutPullRequest?: DraftCheckoutPullRequest | null;
+    tags?: ReadonlyArray<string>;
   },
 ): DraftThreadState {
   const projectChanged =
@@ -1747,6 +1753,7 @@ function createDraftThreadState(
     options?.checkoutPullRequest,
     projectChanged,
   );
+  const tags = options?.tags ?? (projectChanged ? undefined : existingThread?.tags);
   return {
     threadId,
     environmentId: projectRef.environmentId,
@@ -1772,6 +1779,7 @@ function createDraftThreadState(
       options?.envMode ?? (nextWorktreePath ? "worktree" : (existingThread?.envMode ?? "local")),
     startFromOrigin: nextStartFromOrigin,
     ...(checkoutPullRequest ? { checkoutPullRequest } : {}),
+    ...(tags && tags.length > 0 ? { tags } : {}),
     promotedTo: null,
   };
 }
@@ -1824,6 +1832,7 @@ function draftThreadsEqual(left: DraftThreadState | undefined, right: DraftThrea
     left.envMode === right.envMode &&
     left.startFromOrigin === right.startFromOrigin &&
     checkoutPullRequestsEqual(left.checkoutPullRequest, right.checkoutPullRequest) &&
+    (left.tags ?? []).join("\n") === (right.tags ?? []).join("\n") &&
     scopedThreadRefsEqual(left.promotedTo, right.promotedTo)
   );
 }
@@ -2475,7 +2484,10 @@ export function partializeComposerDraftStoreState(
     if (!keptSessionKeys.has(threadKey)) {
       continue;
     }
-    persistedDraftThreadsByThreadKey[threadKey] = draftThread;
+    const { tags, ...persistedDraftThread } = draftThread;
+    persistedDraftThreadsByThreadKey[threadKey] = tags
+      ? { ...persistedDraftThread, tags: [...tags] }
+      : persistedDraftThread;
   }
   return {
     draftsByThreadKey: persistedDraftsByThreadKey,
@@ -2777,6 +2789,7 @@ function toHydratedDraftThreadState(
     ...(persistedDraftThread.checkoutPullRequest
       ? { checkoutPullRequest: persistedDraftThread.checkoutPullRequest }
       : {}),
+    ...(persistedDraftThread.tags ? { tags: persistedDraftThread.tags } : {}),
     promotedTo: persistedDraftThread.promotedTo
       ? scopeThreadRef(
           persistedDraftThread.promotedTo.environmentId as EnvironmentId,
@@ -3065,6 +3078,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
                 options.envMode ?? (nextWorktreePath ? "worktree" : (existing.envMode ?? "local")),
               startFromOrigin: nextStartFromOrigin,
               ...(checkoutPullRequest ? { checkoutPullRequest } : {}),
+              ...(existing.tags && !projectChanged ? { tags: existing.tags } : {}),
               promotedTo: existing.promotedTo ?? null,
             };
             const isUnchanged =

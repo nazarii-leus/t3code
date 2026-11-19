@@ -116,6 +116,7 @@ function setup(input: {
   vi.mocked(useQuietThreadShells).mockReturnValue([...input.threads]);
   vi.mocked(useThreadRouteTarget).mockReturnValue({ kind: "server", threadRef });
   const save = vi.fn();
+  const handleNewThread = vi.fn().mockResolvedValue(null);
   vi.mocked(useSidebarFolderLayout).mockReturnValue({
     layout: input.layout,
     available: true,
@@ -126,11 +127,11 @@ function setup(input: {
     activeThread: null,
     defaultProjectRef: { environmentId: ENV, projectId: PROJECT.id },
     defaultProjectFallbackReady: true,
-    handleNewThread: vi.fn().mockResolvedValue(null),
+    handleNewThread,
     routeDraftId: null,
     routeThreadRef: threadRef,
   });
-  return { stack, show, save };
+  return { stack, show, save, handleNewThread };
 }
 
 const renderSidebar = () =>
@@ -266,5 +267,18 @@ describe("sidebar folders", () => {
       await using screen = await renderSidebar();
       await expect.element(screen.getByTestId("sidebar-attention-strip")).toBeInTheDocument();
     }
+  });
+
+  it("starts a thread inside a folder from its heading", async () => {
+    const { stack, handleNewThread } = setup({ threads: THREADS, layout: [], routeThread: 1 });
+    using _stack = stack;
+    await using screen = await renderSidebar();
+    const plus = screen.getByRole("button", { name: "New thread in Team" });
+    plus.element().focus();
+    await userEvent.keyboard("{Enter}");
+    expect(handleNewThread).toHaveBeenCalledExactlyOnceWith(
+      { environmentId: ENV, projectId: PROJECT.id },
+      { tags: ["in:Team"] },
+    );
   });
 });

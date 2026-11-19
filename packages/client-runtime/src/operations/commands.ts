@@ -170,6 +170,7 @@ interface StartThreadBootstrap {
     readonly branch: string | null;
     readonly worktreePath: string | null;
     readonly createdAt: string;
+    readonly tags?: ReadonlyArray<string>;
   };
   readonly prepareWorktree?: {
     readonly requireWorktree?: boolean;
@@ -825,6 +826,7 @@ export const startThreadTurn = Effect.fn("EnvironmentCommands.startThreadTurn")(
       runtimeMode: input.runtimeMode,
       interactionMode: input.interactionMode,
       workspaceStrategy,
+      ...(bootstrap?.tags?.length ? { tags: bootstrap.tags } : {}),
       initialMessage: {
         messageId: input.message.messageId,
         text: input.message.text,
