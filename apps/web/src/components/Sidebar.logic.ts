@@ -40,6 +40,7 @@ import {
   type ThreadSortInput,
 } from "@t3tools/client-runtime/state/thread-sort";
 import type { SidebarThreadSummary, Thread } from "../types";
+import type { SidebarAttentionClass } from "../sidebarUserFolders";
 import { normalizeSearchText } from "../lib/utils";
 import { isLatestRunSettled } from "../session-logic";
 import { THREAD_STATUS_TEXT } from "@t3tools/client-runtime/state/thread-activity-announcement";
@@ -986,6 +987,35 @@ export function resolveWindowTitleThreadStatus(
   }
 }
 
+/** The class a thread counts in: one colour, one counter, one F8 tier. */
+export function resolveSidebarAttentionClass(
+  thread: ThreadStatusInput & SidebarThreadStatusInput,
+): SidebarAttentionClass {
+  switch (resolveSidebarRowStatus(thread)) {
+    case "approval":
+    case "input":
+    case "request":
+    case "limited":
+      return "needsYou";
+    case "failed":
+      return "failed";
+    case "preparing":
+    case "working":
+      return "working";
+    case "waiting":
+      return "waiting";
+    default:
+      break;
+  }
+  const planReady =
+    !thread.hasPendingUserInput &&
+    thread.interactionMode === "plan" &&
+    thread.hasActionableProposedPlan &&
+    isLatestRunSettled(thread.latestRun, thread.runtime);
+  if (planReady) return "needsYou";
+  return hasUnseenCompletion(thread) ? "done" : "idle";
+}
+
 /**
  * The dot on a closed boring-sidebar folder: the most urgent state among its
  * hidden threads. Waiting threads stay quiet, like their rows.
@@ -993,22 +1023,11 @@ export function resolveWindowTitleThreadStatus(
 export function resolveSidebarFolderDot(
   threads: ReadonlyArray<ThreadStatusInput & SidebarThreadStatusInput>,
 ): "attention" | "failed" | "unread" | "working" | null {
-  const statuses = new Set(threads.map(resolveSidebarRowStatus));
-  if (
-    statuses.has("input") ||
-    statuses.has("approval") ||
-    statuses.has("request") ||
-    statuses.has("limited")
-  ) {
-    return "attention";
-  }
-  if (statuses.has("failed")) return "failed";
-  // Rows show Done only for ready threads, so the dot follows the same rule.
-  const hasUnread = threads.some(
-    (thread) => resolveSidebarRowStatus(thread) === "ready" && hasUnseenCompletion(thread),
-  );
-  if (hasUnread) return "unread";
-  if (statuses.has("working") || statuses.has("preparing")) return "working";
+  const classes = new Set(threads.map(resolveSidebarAttentionClass));
+  if (classes.has("needsYou")) return "attention";
+  if (classes.has("failed")) return "failed";
+  if (classes.has("done")) return "unread";
+  if (classes.has("working")) return "working";
   return null;
 }
 

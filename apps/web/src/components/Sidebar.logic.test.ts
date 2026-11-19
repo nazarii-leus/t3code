@@ -35,6 +35,7 @@ import {
   resolveSidebarDropVerb,
   groupSidebarThreadsByProject,
   resolveSidebarFolderDot,
+  resolveSidebarAttentionClass,
   sidebarFolderExpansionKeys,
 } from "./Sidebar.logic";
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
@@ -1670,6 +1671,50 @@ describe("resolveSidebarFolderDot", () => {
     expect(resolveSidebarFolderDot([idle, working])).toBe("working");
     expect(resolveSidebarFolderDot([working, unread])).toBe("unread");
     expect(resolveSidebarFolderDot([unread, limited])).toBe("attention");
+  });
+});
+
+describe("resolveSidebarAttentionClass", () => {
+  it("sorts a thread into the class its counters and colours use", () => {
+    const idle = {
+      hasActionableProposedPlan: false,
+      hasPendingApprovals: false,
+      hasPendingUserInput: false,
+      interactionMode: "default" as const,
+      latestRun: makeLatestRun(),
+      lastVisitedAt: "2026-03-09T10:06:00.000Z",
+      runtime: null,
+    };
+    const runtime = {
+      status: "running" as const,
+      activeRunId: null,
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      providerName: "Codex",
+      lastError: null,
+      updatedAt: "2026-03-09T10:00:00.000Z",
+    };
+    expect(resolveSidebarAttentionClass(idle)).toBe("idle");
+    expect(resolveSidebarAttentionClass({ ...idle, hasPendingApprovals: true })).toBe("needsYou");
+    expect(
+      resolveSidebarAttentionClass({
+        ...idle,
+        runtime: { ...runtime, status: "failed" as const, lastErrorClass: "usage_limit" as const },
+      }),
+    ).toBe("needsYou");
+    expect(
+      resolveSidebarAttentionClass({
+        ...idle,
+        interactionMode: "plan" as const,
+        hasActionableProposedPlan: true,
+      }),
+    ).toBe("needsYou");
+    expect(resolveSidebarAttentionClass({ ...idle, runtime })).toBe("working");
+    expect(
+      resolveSidebarAttentionClass({ ...idle, runtime: { ...runtime, status: "idle" as const } }),
+    ).toBe("waiting");
+    expect(
+      resolveSidebarAttentionClass({ ...idle, lastVisitedAt: "2026-03-09T10:04:00.000Z" }),
+    ).toBe("done");
   });
 });
 
