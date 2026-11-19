@@ -47,7 +47,9 @@ import {
   CircleDashedIcon,
   CircleDotDashedIcon,
   ClockIcon,
+  CornerDownRightIcon,
   GitBranchIcon,
+  GitForkIcon,
   MessageCircleQuestionIcon,
   PinIcon,
   PinOffIcon,
@@ -575,6 +577,12 @@ type SidebarThreadRowProps = {
   // "folder-multiline" adds the card's branch and PR line under it.
   variant: "card" | "slim" | "folder" | "folder-multiline";
   navigationParent?: string | undefined;
+  // Folder rows only: 1 directly in a folder, 2 and 3 for subfolder sessions and children.
+  depth?: 1 | 2 | 3 | undefined;
+  // How a child row came from the row above it.
+  relation?: "fork" | "sub" | null | undefined;
+  // `data-sidebar-drop` of the row: where a thread dropped on it is filed.
+  dropTarget?: string | undefined;
   variantAction: SidebarSweepAction;
   settlementSupported: boolean;
   snoozeSupported: boolean;
@@ -1136,6 +1144,15 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
       onThreadActivate={onThreadActivate}
     />
   );
+  const RelationIcon =
+    props.relation === "fork" ? GitForkIcon : props.relation === "sub" ? CornerDownRightIcon : null;
+  const relationIndicator = RelationIcon ? (
+    <RelationIcon
+      role="img"
+      aria-label={props.relation === "fork" ? gt("Fork") : gt("Sub-session")}
+      className="size-3.5 shrink-0 text-sidebar-muted-foreground"
+    />
+  ) : null;
   const draftIndicator = hasUnsentDraft ? (
     <Tooltip>
       <TooltipTrigger
@@ -1263,6 +1280,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     return (
       <li
         data-thread-item={threadKey}
+        data-sidebar-drop={props.dropTarget}
         {...sortableRootProps}
         {...(fileDropHandlers ?? {})}
         className={cn(
@@ -1290,7 +1308,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                     ? "flex flex-col justify-center px-2.5 py-1.5"
                     : "flex h-9 items-center gap-2.5 px-2.5",
                   // Lines titles up with the folder name, past its chevron and icon.
-                  inFolder && "ps-9",
+                  inFolder && (props.depth === 3 ? "ps-19" : props.depth === 2 ? "ps-14" : "ps-9"),
                 )}
                 onClick={handleClick}
                 onDoubleClick={handleDoubleClick}
@@ -1314,6 +1332,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                   ) : null}
                 </span>
               )}
+              {relationIndicator}
               {draftIndicator}
               {title}
               {multiline ? titleLineIcons : null}

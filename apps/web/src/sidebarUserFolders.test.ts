@@ -3,6 +3,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   buildSidebarUserFolders,
+  flattenSidebarUserFolders,
   moveSidebarTopFolder,
   placeSidebarFolderUnit,
   planSidebarFolderDrop,
@@ -173,6 +174,51 @@ describe("buildSidebarUserFolders", () => {
     });
     const sub = result.folders[0]!.units.find((unit) => unit.kind === "subfolder");
     expect(sub?.kind === "subfolder" ? sub.counts.total : null).toBe(2);
+  });
+});
+
+describe("flattenSidebarUserFolders", () => {
+  const threads = [
+    thread("solo", 1, { tags: ["in:Tasks/One"] }),
+    thread("a", 2, { tags: ["in:Tasks/Two"] }),
+    thread("b", 3, { tags: ["in:Tasks/Two"] }),
+    thread("fork", 4, { forkOf: "a" }),
+  ];
+  const rows = (collapsed: ReadonlyArray<string>, routeKey: string | null = null) =>
+    flattenSidebarUserFolders({
+      folders: build(threads).folders,
+      isCollapsed: (path) => collapsed.includes(path),
+      routeKey,
+    }).map((row) =>
+      row.kind === "heading"
+        ? `${"  ".repeat(row.depth)}[${row.name}] <${row.parentRowId ?? "-"}>`
+        : `${"  ".repeat(row.depth)}${row.thread.id}${row.relation ? ` (${row.relation})` : ""} <${row.parentRowId}>`,
+    );
+
+  it("draws a one-session subfolder as its row and nests children under their parent", () => {
+    expect(rows([])).toEqual([
+      "[Tasks] <->",
+      "  solo <ufolder:Tasks>",
+      "  [Two] <ufolder:Tasks>",
+      "    a <ufolder:Tasks/Two>",
+      "      fork (fork) <local:a>",
+      "    b <ufolder:Tasks/Two>",
+    ]);
+  });
+
+  it("keeps only the open thread under a folded heading", () => {
+    expect(rows(["Tasks/Two"], "local:fork")).toEqual([
+      "[Tasks] <->",
+      "  solo <ufolder:Tasks>",
+      "  [Two] <ufolder:Tasks>",
+      "      fork (fork) <local:a>",
+    ]);
+    expect(rows(["Tasks"], "local:b")).toEqual([
+      "[Tasks] <->",
+      "  [Two] <ufolder:Tasks>",
+      "    b <ufolder:Tasks/Two>",
+    ]);
+    expect(rows(["Tasks"])).toEqual(["[Tasks] <->"]);
   });
 });
 

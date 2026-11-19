@@ -30,7 +30,45 @@ export type ThreadActionMenuId =
   | "copy-thread"
   | "copy-thread-id"
   | "archive"
-  | "delete";
+  | "delete"
+  | "new-sub-session"
+  | "new-in-folder"
+  | MoveToFolderMenuId;
+
+export type MoveToFolderMenuId =
+  | "move-to-folder"
+  | "move-to-folder:new"
+  | "move-to-folder:none"
+  | `move-to-folder:path:${string}`;
+
+/** "Move to folder" with every folder, a new one, and back to the thread's project. */
+export function buildMoveToFolderMenuItem(
+  folders: { readonly paths: ReadonlyArray<string>; readonly current: string | null },
+  resolve: MessageResolver = m,
+): ContextMenuItem<MoveToFolderMenuId> {
+  return {
+    id: "move-to-folder",
+    label: resolve(msg("Move to folder")),
+    icon: "folder-input",
+    children: [
+      ...folders.paths.map((path) => ({
+        id: `move-to-folder:path:${path}` as const,
+        label: path.replace("/", " / "),
+        checked: path === folders.current,
+      })),
+      {
+        id: "move-to-folder:new" as const,
+        label: resolve(msg("New folder…")),
+        separatorBefore: folders.paths.length > 0,
+      },
+      {
+        id: "move-to-folder:none" as const,
+        label: resolve(msg("No folder")),
+        disabled: folders.current === null,
+      },
+    ],
+  };
+}
 
 export type DraftActionMenuId =
   | "copy"
@@ -121,6 +159,8 @@ export interface ThreadActionMenuState {
   readonly canShareWithGuest?: boolean;
   /** A No project thread with its own folder, on a server that can promote it. */
   readonly canTurnIntoProject?: boolean;
+  /** Set where the sidebar has folders: the known folders and the thread's own. */
+  readonly folders?: { readonly paths: ReadonlyArray<string>; readonly current: string | null };
 }
 
 /** Local navigation, read markers, and copying remain available to read-only clients. */
@@ -136,6 +176,8 @@ export function threadActionRequiresOperate(action: ThreadActionMenuId): boolean
     "copy-branch",
     "copy-thread",
     "copy-thread-id",
+    "new-sub-session",
+    "new-in-folder",
   ].includes(action);
 }
 
@@ -154,6 +196,24 @@ export function buildThreadActionMenuItems(
             label: resolve(msg("New thread on {branch}", { branch: state.branch })),
             icon: "message-square-plus",
           },
+        ]
+      : []),
+    ...(state.folders
+      ? [
+          {
+            id: "new-sub-session" as const,
+            label: resolve(msg("New sub-session")),
+            icon: "corner-down-right",
+          },
+          ...(state.folders.current === null
+            ? []
+            : [
+                {
+                  id: "new-in-folder" as const,
+                  label: resolve(msg("New thread in {folder}", { folder: state.folders.current })),
+                  icon: "message-square-plus",
+                },
+              ]),
         ]
       : []),
     ...(state.supports.pinning
@@ -198,6 +258,7 @@ export function buildThreadActionMenuItems(
               },
         ]
       : []),
+    ...(state.folders ? [buildMoveToFolderMenuItem(state.folders, resolve)] : []),
     { id: "rename", label: resolve(msg("Rename thread")), icon: "pencil", separatorBefore: true },
     ...(state.supports.titleRegeneration
       ? [

@@ -885,7 +885,11 @@ export function useThreadActions() {
   };
 
   /** Files the thread in `folder` (`Top` or `Top/Sub`), or back under its project for null. */
-  const moveThreadToFolder = async (target: ScopedThreadRef, folder: string | null) => {
+  const moveThreadToFolder = async (
+    target: ScopedThreadRef,
+    folder: string | null,
+    options?: { readonly undoable?: boolean },
+  ) => {
     const permissionFailure = threadOperationFailure(target);
     if (permissionFailure) return permissionFailure;
     const currentTags = readThreadShell(target)?.source.tags ?? [];
@@ -902,7 +906,7 @@ export function useThreadActions() {
         },
       });
     const result = await setFolder(folder);
-    if (result._tag !== "Success") {
+    if (result._tag !== "Success" || options?.undoable === false) {
       action.finish();
       return result;
     }

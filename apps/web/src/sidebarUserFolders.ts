@@ -259,6 +259,16 @@ export function buildSidebarUserFolders<T extends SidebarFolderThread>(input: {
   };
 }
 
+export function countSidebarThreadsByClass<T>(
+  threads: ReadonlyArray<T>,
+  classOf: (thread: T) => SidebarAttentionClass,
+): SidebarFolderCounts {
+  return addCounts(EMPTY_COUNTS, threads, classOf);
+}
+
+/** Fold state lives beside the project folders' in the UI state store, per device. */
+export const sidebarUserFolderExpansionKey = (path: string) => `ufolder:${path}`;
+
 const ATTENTION_TIERS = ["needsYou", "failed", "done"] as const;
 
 /** F8: the next thread in the most urgent tier that has one besides the current thread. */
@@ -449,4 +459,112 @@ export function planSidebarFolderDrop(input: {
     rename: lifted === null ? null : { from: from.path, to: lifted },
     layout: moveSidebarTopFolder(renamedLayout, tops, movedPath, beforePath),
   };
+}
+
+const sidebarUserFolderRowId = (path: string) => `ufolder:${path}`;
+
+export type SidebarFolderListRow<T> =
+  | {
+      readonly kind: "heading";
+      readonly path: string;
+      readonly name: string;
+      readonly depth: 0 | 1;
+      readonly icon: string | null;
+      readonly sort: SidebarFolderSort;
+      readonly collapsed: boolean;
+      readonly counts: SidebarFolderCounts;
+      readonly rowId: string;
+      readonly parentRowId: string | null;
+    }
+  | {
+      readonly kind: "thread";
+      readonly thread: T;
+      readonly depth: 1 | 2 | 3;
+      readonly parentRowId: string;
+      readonly relation: "fork" | "sub" | null;
+      /** The folder the row is drawn in: its own for a root, its parent's for a child. */
+      readonly folderPath: string | null;
+    };
+
+type ThreadRow<T> = Extract<SidebarFolderListRow<T>, { kind: "thread" }>;
+
+/** A session row and its children one level deeper. */
+export function sidebarSessionRows<T extends SidebarFolderThread>(
+  node: SidebarSessionNode<T>,
+  depth: 1 | 2,
+  parentRowId: string,
+  folderPath: string | null,
+): ThreadRow<T>[] {
+  const rowId = threadKeyOf(node.thread);
+  return [
+    { kind: "thread", thread: node.thread, depth, parentRowId, relation: null, folderPath },
+    ...node.children.map((child): ThreadRow<T> => ({
+      kind: "thread",
+      thread: child,
+      depth: depth === 1 ? 2 : 3,
+      parentRowId: rowId,
+      relation: child.lineage.relationshipToParent === "fork" ? "fork" : "sub",
+      folderPath,
+    })),
+  ];
+}
+
+/**
+ * Rows in drawing order. A subfolder with one session is that session's row; a
+ * folded folder keeps only the open thread's row under its heading.
+ */
+export function flattenSidebarUserFolders<T extends SidebarFolderThread>(input: {
+  readonly folders: ReadonlyArray<SidebarUserFolder<T>>;
+  readonly isCollapsed: (path: string) => boolean;
+  readonly routeKey: string | null;
+}): SidebarFolderListRow<T>[] {
+  const keepRoute = (rows: ThreadRow<T>[], collapsed: boolean) =>
+    collapsed ? rows.filter((row) => threadKeyOf(row.thread) === input.routeKey) : rows;
+  return input.folders.flatMap((folder) => {
+    const collapsed = input.isCollapsed(folder.path);
+    const rowId = sidebarUserFolderRowId(folder.path);
+    const heading: SidebarFolderListRow<T> = {
+      kind: "heading",
+      path: folder.path,
+      name: folder.name,
+      depth: 0,
+      icon: folder.icon,
+      sort: folder.sort,
+      collapsed,
+      counts: folder.counts,
+      rowId,
+      parentRowId: null,
+    };
+    const body = folder.units.flatMap((unit): SidebarFolderListRow<T>[] => {
+      if (unit.kind === "session") {
+        return keepRoute(sidebarSessionRows(unit.session, 1, rowId, folder.path), collapsed);
+      }
+      if (unit.sessions.length === 1) {
+        return keepRoute(sidebarSessionRows(unit.sessions[0]!, 1, rowId, unit.path), collapsed);
+      }
+      const subCollapsed = input.isCollapsed(unit.path);
+      const subRowId = sidebarUserFolderRowId(unit.path);
+      const rows = keepRoute(
+        unit.sessions.flatMap((node) => sidebarSessionRows(node, 2, subRowId, unit.path)),
+        collapsed || subCollapsed,
+      );
+      if (collapsed && rows.length === 0) return [];
+      return [
+        {
+          kind: "heading",
+          path: unit.path,
+          name: unit.name,
+          depth: 1,
+          icon: null,
+          sort: folder.sort,
+          collapsed: subCollapsed,
+          counts: unit.counts,
+          rowId: subRowId,
+          parentRowId: rowId,
+        },
+        ...rows,
+      ];
+    });
+    return [heading, ...body];
+  });
 }
