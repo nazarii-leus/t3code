@@ -675,15 +675,19 @@ it.effect("renames a folder for agents by retagging its threads and saving the l
   });
   return Effect.gen(function* () {
     const server = yield* McpServer.McpServer;
-    const result = yield* server
-      .callTool({
-        name: "t3_folder",
-        arguments: { action: "rename", path: "customers", to: "Clients" },
-      })
-      .pipe(
-        Effect.provideService(McpInvocationContext.McpInvocationContext, scope),
-        Effect.provideService(McpSchema.McpServerClient, client),
-      );
+    const rename = (to: string) =>
+      server
+        .callTool({ name: "t3_folder", arguments: { action: "rename", path: "customers", to } })
+        .pipe(
+          Effect.provideService(McpInvocationContext.McpInvocationContext, scope),
+          Effect.provideService(McpSchema.McpServerClient, client),
+        );
+    // Its subfolder would end three levels deep, where no folder is read.
+    expect(declaredFailure(yield* rename("Archive/Customers"))).toMatchObject({
+      code: "invalid_request",
+    });
+    expect(dispatched).toEqual([]);
+    const result = yield* rename("Clients");
     expect(result.isError).toBe(false);
     expect(dispatched.map(({ threadId, tag, tagged }) => [threadId, tag, tagged])).toEqual([
       ["pul", "in:Clients/PuL", true],

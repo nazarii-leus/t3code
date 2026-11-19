@@ -137,11 +137,11 @@ export function buildSidebarUserFolders<T extends SidebarFolderThread>(input: {
     let top: string | null = null;
     const seen = new Set([threadKeyOf(thread)]);
     let current: T | undefined = thread;
-    for (let hop = 0; hop < MAX_PARENT_HOPS && current !== undefined; hop += 1) {
+    for (let hop = 0; current !== undefined; hop += 1) {
       const parentKey = effectiveParentKey(current);
-      if (parentKey === null || !byKey.has(parentKey)) break;
-      // A cycle has no top; its threads stay roots.
-      if (seen.has(parentKey)) return null;
+      if (parentKey === null || !byKey.has(parentKey)) return top;
+      // A cycle, or a chain too deep to draw, has no top; its threads stay roots.
+      if (seen.has(parentKey) || hop === MAX_PARENT_HOPS) return null;
       seen.add(parentKey);
       top = parentKey;
       current = byKey.get(parentKey);
@@ -149,18 +149,18 @@ export function buildSidebarUserFolders<T extends SidebarFolderThread>(input: {
     return top;
   };
 
+  const byCreation = (left: T, right: T) =>
+    left.createdAt < right.createdAt ? -1 : left.createdAt > right.createdAt ? 1 : 0;
   const roots: T[] = [];
   const children = new Map<string, T[]>();
   for (const thread of input.threads) {
     const top = topParentKey(thread);
     if (top === null) roots.push(thread);
-    else children.set(top, [...(children.get(top) ?? []), thread]);
+    else if (children.has(top)) children.get(top)!.push(thread);
+    else children.set(top, [thread]);
   }
   const childrenByParentKey = new Map(
-    [...children].map(
-      ([key, list]) =>
-        [key, list.toSorted((left, right) => (left.createdAt < right.createdAt ? -1 : 1))] as const,
-    ),
+    [...children].map(([key, list]) => [key, list.toSorted(byCreation)] as const),
   );
   const nodeOf = (thread: T): SidebarSessionNode<T> => ({
     thread,
@@ -194,7 +194,8 @@ export function buildSidebarUserFolders<T extends SidebarFolderThread>(input: {
       unfiledRoots.push(thread);
       continue;
     }
-    rootsByPath.set(folder.path, [...(rootsByPath.get(folder.path) ?? []), thread]);
+    if (rootsByPath.has(folder.path)) rootsByPath.get(folder.path)!.push(thread);
+    else rootsByPath.set(folder.path, [thread]);
     if (folder.sub !== null) addSubfolder(folder.top, folder.sub);
   }
   const taggedTops = [...rootsByPath.keys()].map((path) => path.split("/")[0]!);
@@ -254,9 +255,7 @@ export function buildSidebarUserFolders<T extends SidebarFolderThread>(input: {
 
   return {
     folders,
-    unfiledRoots: unfiledRoots.toSorted((left, right) =>
-      left.createdAt < right.createdAt ? -1 : left.createdAt > right.createdAt ? 1 : 0,
-    ),
+    unfiledRoots: unfiledRoots.toSorted(byCreation),
     childrenByParentKey,
   };
 }

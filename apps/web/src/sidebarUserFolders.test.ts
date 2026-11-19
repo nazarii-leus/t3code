@@ -103,6 +103,15 @@ describe("buildSidebarUserFolders", () => {
     expect(result.childrenByParentKey.size).toBe(1);
   });
 
+  it("keeps a thread visible as a root when its parent chain is too deep to draw", () => {
+    const chain = Array.from({ length: 10 }, (_, index) =>
+      thread(`t${index}`, index, index === 0 ? {} : { tags: [`parent:t${index - 1}`] }),
+    );
+    const result = build(chain);
+    expect(result.unfiledRoots.map((entry) => entry.id)).toEqual(["t0", "t9"]);
+    expect(result.childrenByParentKey.get("local:t0")?.length).toBe(8);
+  });
+
   it("ends a parent cycle by keeping both threads as roots", () => {
     const result = build([
       thread("a", 1, { tags: ["parent:b"] }),

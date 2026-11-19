@@ -8,11 +8,11 @@ import {
   OrchestratorMcpFailure,
   type OrchestrationV2Command,
   moveSidebarTopFolder,
-  parseThreadFolderPath,
   removeSidebarFolder,
   renameSidebarFolder,
   renameThreadFolderPath,
   setSidebarFolderIcon,
+  SIDEBAR_FOLDER_ICON_NAMES,
   type SidebarFolderEntry,
   threadFolderOf,
   upsertSidebarFolder,
@@ -468,6 +468,8 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
         required(input.path, "path").pipe(
           Effect.flatMap((value) => resolveThreadFolder(value, known)),
         );
+      const refuse = (message: string) =>
+        Effect.fail(new OrchestratorMcpFailure({ code: "invalid_request", message }));
       const existing = () =>
         path().pipe(
           Effect.filterOrFail(
@@ -476,6 +478,17 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
               new OrchestratorMcpFailure({
                 code: "invalid_request",
                 message: `There is no folder "${value}".`,
+              }),
+          ),
+        );
+      const existingTop = () =>
+        existing().pipe(
+          Effect.filterOrFail(
+            (value) => !value.includes("/"),
+            () =>
+              new OrchestratorMcpFailure({
+                code: "invalid_request",
+                message: "Only a top folder can be reordered or given an icon.",
               }),
           ),
         );
@@ -497,16 +510,17 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
           next = upsertSidebarFolder(layout, yield* path());
           break;
         case "rename": {
+          // Renaming onto an existing folder merges them, so a rename cut short can be repeated.
           const from = yield* existing();
-          const target = parseThreadFolderPath(yield* required(input.to, "to"));
-          if (target === null || known.includes(target.path)) {
-            return yield* new OrchestratorMcpFailure({
-              code: "invalid_request",
-              message: "`to` must be a new folder, `Top` or `Top/Sub`.",
-            });
+          const to = yield* resolveThreadFolder(yield* required(input.to, "to"), known);
+          if (to.includes("/") && known.some((candidate) => candidate.startsWith(`${from}/`))) {
+            return yield* refuse("A folder with subfolders can only be renamed to a top folder.");
           }
-          yield* retag(from, (folder) => renameThreadFolderPath(folder, from, target.path));
-          next = renameSidebarFolder(upsertSidebarFolder(layout, from), from, target.path);
+          if (to === from || to.startsWith(`${from}/`)) {
+            return yield* refuse("`to` must name a different folder outside this one.");
+          }
+          yield* retag(from, (folder) => renameThreadFolderPath(folder, from, to));
+          next = renameSidebarFolder(upsertSidebarFolder(layout, from), from, to);
           break;
         }
         case "remove": {
@@ -516,18 +530,29 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
           break;
         }
         case "reorder": {
-          const target = yield* existing();
+          const target = yield* existingTop();
           const tops = listThreadFolders(layout, shells)
             .map((folder) => folder.path)
             .filter((candidate) => !candidate.includes("/"));
           const before =
             input.before === undefined ? null : yield* resolveThreadFolder(input.before, known);
+          if (before !== null && !tops.includes(before)) {
+            return yield* refuse(`\`before\` must be a top folder: ${tops.join(", ")}.`);
+          }
           next = moveSidebarTopFolder(layout, tops, target, before);
           break;
         }
-        case "set_icon":
-          next = setSidebarFolderIcon(layout, yield* existing(), input.icon ?? null);
+        case "set_icon": {
+          const target = yield* existingTop();
+          if (
+            input.icon !== undefined &&
+            !(SIDEBAR_FOLDER_ICON_NAMES as ReadonlyArray<string>).includes(input.icon)
+          ) {
+            return yield* refuse(`\`icon\` is one of ${SIDEBAR_FOLDER_ICON_NAMES.join(", ")}.`);
+          }
+          next = setSidebarFolderIcon(layout, target, input.icon ?? null);
           break;
+        }
       }
       const saved =
         next === null

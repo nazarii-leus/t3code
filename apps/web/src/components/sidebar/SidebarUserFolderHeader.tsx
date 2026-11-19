@@ -1,4 +1,4 @@
-import type { ContextMenuSource } from "@t3tools/contracts";
+import type { ContextMenuSource, SidebarFolderIconName } from "@t3tools/contracts";
 import {
   BookOpenIcon,
   BriefcaseIcon,
@@ -32,7 +32,7 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { SidebarFolderCounts } from "./SidebarFolderCounts";
 
 /** Icons a top folder can carry, by the name saved in the folder layout. */
-export const SIDEBAR_FOLDER_ICONS: Readonly<Record<string, LucideIcon>> = {
+export const SIDEBAR_FOLDER_ICONS: Readonly<Record<SidebarFolderIconName, LucideIcon>> = {
   folder: FolderIcon,
   users: UsersIcon,
   briefcase: BriefcaseIcon,
@@ -93,8 +93,9 @@ function FolderNameInput(props: SidebarFolderNameEdit & { label: string }) {
       className="min-w-0 flex-1 rounded-sm bg-transparent text-sm font-medium text-sidebar-foreground outline-none ring-1 ring-ring"
       onChange={(event) => props.onChange(event.target.value)}
       onKeyDown={handleKeyDown}
+      // As for a thread title, leaving the field keeps what was typed.
       onBlur={() => {
-        if (!settledRef.current) props.onCancel();
+        if (!settledRef.current) props.onCommit();
       }}
     />
   );
@@ -126,7 +127,9 @@ export const SidebarUserFolderHeader = memo(function SidebarUserFolderHeader(pro
   const gt = useGT();
   const { path, name, collapsed } = props;
   const Icon =
-    props.depth === 0 ? (SIDEBAR_FOLDER_ICONS[props.icon ?? "folder"] ?? FolderIcon) : null;
+    props.depth === 0
+      ? (SIDEBAR_FOLDER_ICONS[(props.icon ?? "folder") as SidebarFolderIconName] ?? FolderIcon)
+      : null;
   const content = (
     <>
       {Icon ? <Icon aria-hidden className="size-4 shrink-0 text-sidebar-muted-foreground" /> : null}

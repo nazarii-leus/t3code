@@ -2010,7 +2010,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     const refs = contextDragThreads();
     const drop = target.dataset.sidebarDrop ?? "";
     if (drop === "project") {
-      folderActions.moveThreads(refs, null);
+      void folderActions.moveThreads(refs, null);
       return;
     }
     if (!drop.startsWith("folder:")) return;
@@ -2020,22 +2020,35 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     const folder = folderTree?.folders.find((candidate) => candidate.path === path);
     const anchorRef = anchorKey === undefined ? null : parseScopedThreadKey(anchorKey);
     const dragged = refs.length === 1 ? refs[0]! : null;
-    if (folder?.sort === "manual" && anchorRef !== null && dragged !== null) {
+    const unitKeys = folder?.units.map((unit) => unit.key) ?? [];
+    // Only a row that is a unit of its own (not a child row, not the dragged row) is a place.
+    if (
+      folder?.sort === "manual" &&
+      dragged !== null &&
+      anchorRef !== null &&
+      anchorRef.threadId !== dragged.threadId &&
+      unitKeys.includes(anchorRef.threadId)
+    ) {
       const bounds = target.getBoundingClientRect();
-      folderActions.moveThreads([dragged], path);
-      sidebarFolderLayout.save(
-        placeSidebarFolderUnit(
-          sidebarFolderLayout.layout,
-          path,
-          folder.units.map((unit) => unit.key),
-          dragged.threadId,
-          anchorRef.threadId,
-          point.y < bounds.top + bounds.height / 2 ? "before" : "after",
-        ),
-      );
+      const side = point.y < bounds.top + bounds.height / 2 ? "before" : "after";
+      const layout = sidebarFolderLayout.layout;
+      void folderActions
+        .moveThreads([dragged], path)
+        .then(() =>
+          sidebarFolderLayout.save(
+            placeSidebarFolderUnit(
+              layout,
+              path,
+              unitKeys,
+              dragged.threadId,
+              anchorRef.threadId,
+              side,
+            ),
+          ),
+        );
       return;
     }
-    folderActions.moveThreads(refs, path);
+    void folderActions.moveThreads(refs, path);
   };
   const moveThreadContextDrag = (point: { x: number; y: number }) => {
     const sidebarDropTarget = sidebarDropTargetAt(point);
@@ -3989,22 +4002,30 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                               />
                             );
                           };
+                          const shownOnlyFolder =
+                            onlyFolder !== null &&
+                            folderTree?.folders.some((folder) => folder.path === onlyFolder)
+                              ? onlyFolder
+                              : null;
                           const shownFolderRows =
-                            onlyFolder === null
+                            shownOnlyFolder === null
                               ? userFolderRows
                               : userFolderRows.filter((row) => {
                                   const path =
                                     row.kind === "heading" ? row.path : (row.folderPath ?? "");
-                                  return path === onlyFolder || path.startsWith(`${onlyFolder}/`);
+                                  return (
+                                    path === shownOnlyFolder ||
+                                    path.startsWith(`${shownOnlyFolder}/`)
+                                  );
                                 });
-                          if (onlyFolder !== null) {
+                          if (shownOnlyFolder !== null) {
                             items.push(
                               <li
                                 key="user-folders-only"
                                 className="flex list-none items-center gap-2 px-(--sidebar-row-content-inset) pb-1 text-xs text-sidebar-muted-foreground"
                               >
                                 <span className="min-w-0 flex-1 truncate">
-                                  {gt("Only {folder} · Esc shows all", { folder: onlyFolder })}
+                                  {gt("Only {folder} · Esc shows all", { folder: shownOnlyFolder })}
                                 </span>
                                 <InlineButton onClick={() => setOnlyFolder(null)}>
                                   {gt("Show all")}
@@ -4044,7 +4065,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                               }),
                             );
                           }
-                          if (onlyFolder !== null) continue;
+                          if (shownOnlyFolder !== null) continue;
                           if (userFolderRows.length > 0) {
                             items.push(
                               <li

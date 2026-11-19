@@ -93,6 +93,23 @@ export function matchKnownThreadFolder(path: string, known: ReadonlyArray<string
   return knownTop === undefined ? path : [knownTop, ...rest].join("/");
 }
 
+/** Icons a top folder can show; the sidebar draws one per name. */
+export const SIDEBAR_FOLDER_ICON_NAMES = [
+  "folder",
+  "users",
+  "briefcase",
+  "building",
+  "list-checks",
+  "inbox",
+  "star",
+  "flag",
+  "bug",
+  "wrench",
+  "rocket",
+  "book",
+] as const;
+export type SidebarFolderIconName = (typeof SIDEBAR_FOLDER_ICON_NAMES)[number];
+
 export const SidebarFolderSort = Schema.Literals(["created", "title", "manual"]);
 export type SidebarFolderSort = typeof SidebarFolderSort.Type;
 

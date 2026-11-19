@@ -1,5 +1,9 @@
 import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environment";
-import { settlePromise } from "@t3tools/client-runtime/state/runtime";
+import {
+  type AtomCommandResult,
+  isAtomCommandInterrupted,
+  settlePromise,
+} from "@t3tools/client-runtime/state/runtime";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
 import {
   type ContextMenuItem,
@@ -23,6 +27,7 @@ import { useState } from "react";
 
 import { useStableCallback } from "../../hooks/useStableCallback";
 import { readLocalApi } from "../../localApi";
+import { stackedThreadToast, toastManager } from "../ui/toast";
 import { planSidebarFolderDrop, type SidebarUserFolder } from "../../sidebarUserFolders";
 import { buildMoveToFolderMenuItem, type MoveToFolderMenuId } from "../threadActionMenu.logic";
 import { SIDEBAR_FOLDER_ICONS, type SidebarFolderNameEdit } from "./SidebarUserFolderHeader";
@@ -61,7 +66,7 @@ export function useSidebarFolderActions(input: {
     target: ScopedThreadRef,
     folder: string | null,
     options?: { readonly undoable?: boolean },
-  ) => Promise<unknown>;
+  ) => Promise<AtomCommandResult<unknown, unknown> | null>;
   readonly onNewThreadInFolder: ((path: string) => void) | null;
   readonly onShowOnly: (path: string) => void;
 }) {
@@ -75,8 +80,37 @@ export function useSidebarFolderActions(input: {
     ...folder.units.flatMap((unit) => (unit.kind === "subfolder" ? [unit.path] : [])),
   ]);
 
+  // Runs the moves together and says in one toast how many failed; the rest stand.
+  const runMoves = async (
+    moves: ReadonlyArray<{ readonly ref: ScopedThreadRef; readonly folder: string | null }>,
+    undoable: boolean,
+  ) => {
+    const results = await Promise.all(
+      moves.map(({ ref, folder }) =>
+        undoable
+          ? input.moveThreadToFolder(ref, folder)
+          : input.moveThreadToFolder(ref, folder, { undoable: false }),
+      ),
+    );
+    const failed = results.filter(
+      (result) => result?._tag === "Failure" && !isAtomCommandInterrupted(result),
+    ).length;
+    if (failed > 0) {
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: gt("Could not move {failed} of {total} threads", {
+            failed,
+            total: moves.length,
+          }),
+          description: gt("The others moved. Try again when the connection is back."),
+        }),
+      );
+    }
+  };
+
   const moveThreads = (refs: ReadonlyArray<ScopedThreadRef>, path: string | null) => {
-    const seen = new Set<string>();
+    const moves = new Map<string, { ref: ScopedThreadRef; folder: string | null }>();
     for (const ref of refs) {
       // A parent takes the children drawn under it along.
       const children = input.childrenByParentKey.get(scopedThreadKey(ref)) ?? [];
@@ -84,30 +118,38 @@ export function useSidebarFolderActions(input: {
         ref,
         ...children.map((child) => scopeThreadRef(child.environmentId, child.id)),
       ]) {
-        const key = scopedThreadKey(target);
-        if (seen.has(key)) continue;
-        seen.add(key);
-        void input.moveThreadToFolder(target, path);
+        moves.set(scopedThreadKey(target), { ref: target, folder: path });
       }
     }
+    return runMoves([...moves.values()], true);
   };
 
-  const retag = (map: (path: string) => string | null | undefined) => {
-    for (const thread of input.threads) {
-      const current = threadFolderOf(thread.source.tags)?.path;
-      if (current === undefined) continue;
-      const next = map(current);
-      if (next === undefined) continue;
-      void input.moveThreadToFolder(scopeThreadRef(thread.environmentId, thread.id), next, {
-        undoable: false,
-      });
-    }
-  };
+  const retag = (map: (path: string) => string | null | undefined) =>
+    runMoves(
+      input.threads.flatMap((thread) => {
+        const current = threadFolderOf(thread.source.tags)?.path;
+        const next = current === undefined ? undefined : map(current);
+        return next === undefined
+          ? []
+          : [{ ref: scopeThreadRef(thread.environmentId, thread.id), folder: next }];
+      }),
+      false,
+    );
 
-  const renameFolder = (from: string, to: string) => {
-    retag((path) => renameThreadFolderPath(path, from, to) ?? undefined);
+  // The layout follows once the threads have moved; a rename into an existing folder merges them.
+  const renameFolder = async (from: string, to: string) => {
+    await retag((path) => renameThreadFolderPath(path, from, to) ?? undefined);
     input.saveLayout(renameSidebarFolder(input.layout, from, to));
   };
+
+  const refuseName = () =>
+    toastManager.add({
+      type: "warning",
+      title: gt("Folder name not used"),
+      description: gt(
+        "A name has 1 to 60 characters. Folders go two levels deep: Top, or Top/Sub for a new folder.",
+      ),
+    });
 
   const startEdit = (target: SidebarFolderEditTarget, value: string) => {
     setEditTarget(target);
@@ -119,24 +161,34 @@ export function useSidebarFolderActions(input: {
     setEditTarget(null);
     if (target === null) return;
     const name = editValue.trim();
+    if (name === "") return;
     if (target.kind === "rename") {
       const parsed = parseThreadFolderPath(target.path);
-      if (parsed === null || name.includes("/")) return;
-      const next = parseThreadFolderPath(parsed.sub === null ? name : `${parsed.top}/${name}`);
-      if (next === null || next.path === target.path || knownPaths.includes(next.path)) return;
-      renameFolder(target.path, next.path);
+      const next =
+        parsed === null || name.includes("/")
+          ? null
+          : parseThreadFolderPath(parsed.sub === null ? name : `${parsed.top}/${name}`);
+      if (next === null) {
+        refuseName();
+        return;
+      }
+      const path = matchKnownThreadFolder(next.path, knownPaths);
+      if (path !== target.path) void renameFolder(target.path, path);
       return;
     }
-    if (target.parent !== null && name.includes("/")) return;
-    const parsed = parseThreadFolderPath(
-      target.parent === null ? name : `${target.parent}/${name}`,
-    );
-    if (parsed === null) return;
+    const parsed =
+      target.parent !== null && name.includes("/")
+        ? null
+        : parseThreadFolderPath(target.parent === null ? name : `${target.parent}/${name}`);
+    if (parsed === null) {
+      refuseName();
+      return;
+    }
     const path = matchKnownThreadFolder(parsed.path, knownPaths);
     if (input.layoutWritable && !input.layout.some((entry) => entry.path === path)) {
       input.saveLayout(upsertSidebarFolder(input.layout, path));
     }
-    if (target.threads.length > 0) moveThreads(target.threads, path);
+    if (target.threads.length > 0) void moveThreads(target.threads, path);
   };
   const editFor = (target: "new-top" | `new-sub:${string}` | `rename:${string}`) => {
     if (editTarget === null) return null;
@@ -163,9 +215,9 @@ export function useSidebarFolderActions(input: {
     if (picked === "move-to-folder:new") {
       startEdit({ kind: "new", parent: null, threads: refs }, "");
     } else if (picked === "move-to-folder:none") {
-      moveThreads(refs, null);
+      void moveThreads(refs, null);
     } else if (picked.startsWith("move-to-folder:path:")) {
-      moveThreads(refs, picked.slice("move-to-folder:path:".length));
+      void moveThreads(refs, picked.slice("move-to-folder:path:".length));
     }
   };
   const showMoveMenu = async (
@@ -201,11 +253,13 @@ export function useSidebarFolderActions(input: {
         input.folders.find((folder) => folder.path === path)?.units.map((unit) => unit.key) ?? [],
     });
     if (plan === null) return false;
-    if (plan.rename !== null) {
-      const { from: renamedFrom, to: renamedTo } = plan.rename;
-      retag((path) => renameThreadFolderPath(path, renamedFrom, renamedTo) ?? undefined);
-    }
-    input.saveLayout(plan.layout);
+    const rename = plan.rename;
+    void (async () => {
+      if (rename !== null) {
+        await retag((path) => renameThreadFolderPath(path, rename.from, rename.to) ?? undefined);
+      }
+      input.saveLayout(plan.layout);
+    })();
     return true;
   };
 
@@ -356,7 +410,7 @@ export function useSidebarFolderActions(input: {
             ) {
               return;
             }
-            retag((current) =>
+            await retag((current) =>
               renameThreadFolderPath(current, path, path) === null ? undefined : null,
             );
             if (input.layoutWritable) input.saveLayout(removeSidebarFolder(input.layout, path));
