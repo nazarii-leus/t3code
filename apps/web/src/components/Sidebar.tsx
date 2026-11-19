@@ -291,6 +291,7 @@ import {
   buildSidebarUserFolders,
   countSidebarThreadsByClass,
   flattenSidebarUserFolders,
+  placeSidebarFolderUnit,
   sidebarSessionRows,
   sidebarUserFolderExpansionKey,
   resolveAdjacentAttentionKey,
@@ -364,6 +365,8 @@ const EMPTY_THREADS: readonly EnvironmentThreadShell[] = [];
 const EMPTY_USER_FOLDERS: ReadonlyArray<SidebarUserFolder<EnvironmentThreadShell>> = [];
 const EMPTY_CHILDREN = new Map<string, ReadonlyArray<EnvironmentThreadShell>>();
 const NO_FOLDER_COUNTS = { needsYou: 0, failed: 0, done: 0, working: 0, total: 0 };
+const SIDEBAR_DROP_EDGE_PX = 28;
+const SIDEBAR_DROP_SCROLL_STEP_PX = 12;
 
 const SETTLED_TAIL_INITIAL_COUNT = 10;
 const SETTLED_TAIL_PAGE_COUNT = 25;
@@ -1197,6 +1200,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   const dragSensorRef = useRef<SidebarPointerSensor | null>(null);
   const contextDragKeyRef = useRef<string | null>(null);
   const dragScrollRef = useRef<{ readonly viewport: Element; readonly top: number } | null>(null);
+  const dropOverRef = useRef<HTMLElement | null>(null);
   const [actionSweep, setActionSweep] = useState<{
     action: SidebarSweepAction;
     keys: ReadonlySet<string>;
@@ -1935,7 +1939,14 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     dragState?.contextDrag === true ||
     dragState?.activeSection === "working";
   const dragTargetSection = isContextDrag ? null : (dragState?.targetSection ?? null);
+  const markSidebarDropTarget = (target: HTMLElement | null) => {
+    if (dropOverRef.current === target) return;
+    dropOverRef.current?.removeAttribute("data-sidebar-drop-over");
+    target?.setAttribute("data-sidebar-drop-over", "");
+    dropOverRef.current = target;
+  };
   const finishThreadDrag = (started: boolean) => {
+    markSidebarDropTarget(null);
     dragSensorRef.current = null;
     contextDragKeyRef.current = null;
     dragScrollRef.current = null;
@@ -1971,7 +1982,77 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     const scroll = dragScrollRef.current;
     if (scroll && scroll.viewport.scrollTop !== scroll.top) scroll.viewport.scrollTop = scroll.top;
   };
+  // Inside the grouped list a drag files threads: onto a folder, a row in it, or a project.
+  const sidebarDropTargetAt = (point: { x: number; y: number }) => {
+    if (projectFolders === null || searchResultsListRef.current !== null) return null;
+    if (pointerOutsideThreadList(point)) return null;
+    const target = document
+      .elementFromPoint(point.x, point.y)
+      ?.closest<HTMLElement>("[data-sidebar-drop]");
+    return target && threadListRef.current?.contains(target) ? target : null;
+  };
+  // dnd-kit autoscroll is off for these drags, so the list scrolls itself near its edges.
+  const scrollListNearEdge = (point: { x: number; y: number }) => {
+    const viewport = dragScrollRef.current?.viewport;
+    if (!viewport) return;
+    const bounds = viewport.getBoundingClientRect();
+    const step =
+      point.y < bounds.top + SIDEBAR_DROP_EDGE_PX
+        ? -SIDEBAR_DROP_SCROLL_STEP_PX
+        : point.y > bounds.bottom - SIDEBAR_DROP_EDGE_PX
+          ? SIDEBAR_DROP_SCROLL_STEP_PX
+          : 0;
+    if (step === 0) return;
+    viewport.scrollTop += step;
+    dragScrollRef.current = { viewport, top: viewport.scrollTop };
+  };
+  const dropOnSidebarTarget = (target: HTMLElement, point: { x: number; y: number }) => {
+    const refs = contextDragThreads();
+    const drop = target.dataset.sidebarDrop ?? "";
+    if (drop === "project") {
+      folderActions.moveThreads(refs, null);
+      return;
+    }
+    if (!drop.startsWith("folder:")) return;
+    const path = drop.slice("folder:".length);
+    // A row in a folder kept in its own order places the dragged thread beside it.
+    const anchorKey = target.dataset.threadItem;
+    const folder = folderTree?.folders.find((candidate) => candidate.path === path);
+    const anchorRef = anchorKey === undefined ? null : parseScopedThreadKey(anchorKey);
+    const dragged = refs.length === 1 ? refs[0]! : null;
+    if (folder?.sort === "manual" && anchorRef !== null && dragged !== null) {
+      const bounds = target.getBoundingClientRect();
+      folderActions.moveThreads([dragged], path);
+      sidebarFolderLayout.save(
+        placeSidebarFolderUnit(
+          sidebarFolderLayout.layout,
+          path,
+          folder.units.map((unit) => unit.key),
+          dragged.threadId,
+          anchorRef.threadId,
+          point.y < bounds.top + bounds.height / 2 ? "before" : "after",
+        ),
+      );
+      return;
+    }
+    folderActions.moveThreads(refs, path);
+  };
   const moveThreadContextDrag = (point: { x: number; y: number }) => {
+    const sidebarDropTarget = sidebarDropTargetAt(point);
+    if (projectFolders !== null && searchResultsListRef.current === null) {
+      if (!pointerOutsideThreadList(point)) {
+        setDragState((current) =>
+          current === null || current.contextDrag ? current : { ...current, contextDrag: true },
+        );
+        scrollListNearEdge(point);
+        markSidebarDropTarget(sidebarDropTarget);
+        const threadRef = parseScopedThreadKey(contextDragKeyRef.current ?? "");
+        const title = (threadRef && readThreadShell(threadRef)?.title.trim()) || gt("Thread");
+        moveThreadContextDragGhost(point, { title, count: contextDragThreads().length });
+        return true;
+      }
+      markSidebarDropTarget(null);
+    }
     // Search results cannot reorder, so their context preview starts inside the list.
     const contextDrag = searchResultsListRef.current !== null || pointerOutsideThreadList(point);
     setDragState((current) =>
@@ -1991,6 +2072,13 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     return true;
   };
   const dropThreadContextDrag = (point: { x: number; y: number }) => {
+    const sidebarDropTarget = sidebarDropTargetAt(point);
+    markSidebarDropTarget(null);
+    if (sidebarDropTarget !== null) {
+      endThreadContextDrag();
+      dropOnSidebarTarget(sidebarDropTarget, point);
+      return true;
+    }
     if (!pointerOutsideThreadList(point)) return false;
     restoreDragScroll();
     dropThreadContext(point, contextDragThreads());
@@ -3941,6 +4029,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                                   edit={folderActions.editFor(`rename:${row.path}`)}
                                   onToggle={toggleUserFolder}
                                   onNewThread={startThreadInUserFolder}
+                                  onFolderDrop={folderActions.applyDrop}
                                   onContextMenu={folderActions.openFolderMenu}
                                 />,
                               );

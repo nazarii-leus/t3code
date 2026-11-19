@@ -41,7 +41,7 @@ export const SidebarProjectFolderHeader = memo(function SidebarProjectFolderHead
     <li
       data-testid="sidebar-project-folder"
       data-sidebar-drop="project"
-      className="group/project-folder relative mt-2 list-none first:mt-0"
+      className="group/project-folder relative mt-2 list-none rounded-(--control-radius) first:mt-0 data-sidebar-drop-over:bg-sidebar-row-hover"
     >
       <button
         type="button"

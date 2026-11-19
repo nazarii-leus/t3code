@@ -10,13 +10,17 @@ import {
 import { describe, expect, it, vi } from "vite-plus/test";
 import { page, userEvent } from "vite-plus/test/browser";
 
-import { render } from "../../test/render";
+import { act, render } from "../../test/render";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
 import { __setClientSettingsForTests, getClientSettings } from "../hooks/useSettings";
 import { useSidebarFolderLayout } from "../hooks/useSidebarFolderLayout";
+import { useThreadActions } from "../hooks/useThreadActions";
 import { useThreadRouteTarget } from "../hooks/useThreadRouteTarget";
 import { readLocalApi } from "../localApi";
-import { useProjects, useQuietThreadShells } from "../state/entities";
+import { useProjects, useQuietThreadShells, useServerConfigs } from "../state/entities";
+import { useConnectedEnvironmentIds } from "../state/environments";
+import { readEnvironmentScope, useEnvironmentScope } from "../state/session";
+import type { EnvironmentServerConfig } from "@t3tools/client-runtime/connection";
 import { makeThreadFixture } from "../test-fixtures";
 import type { Project } from "../types";
 import { useUiStateStore } from "../uiStateStore";
@@ -27,6 +31,9 @@ vi.mock("../state/entities", { spy: true });
 vi.mock("../hooks/useHandleNewThread", { spy: true });
 vi.mock("../hooks/useThreadRouteTarget", { spy: true });
 vi.mock("../hooks/useSidebarFolderLayout", { spy: true });
+vi.mock("../hooks/useThreadActions", { spy: true });
+vi.mock("../state/environments", { spy: true });
+vi.mock("../state/session", { spy: true });
 vi.mock("../localApi", { spy: true });
 vi.mock(import("../state/server"), async (original) => {
   const { Atom } = await import("effect/reactivity");
@@ -45,6 +52,10 @@ vi.mock("./sidebar/SidebarChrome", () => ({
   SidebarChromeHeader: () => null,
   SidebarChromeFooter: () => null,
 }));
+
+const { useThreadActions: realUseThreadActions } = await vi.importActual<
+  typeof import("../hooks/useThreadActions")
+>("../hooks/useThreadActions");
 
 const ENV = EnvironmentId.make("local");
 const PROJECT: Project = {
@@ -117,6 +128,12 @@ function setup(input: {
   vi.mocked(useThreadRouteTarget).mockReturnValue({ kind: "server", threadRef });
   const save = vi.fn();
   const handleNewThread = vi.fn().mockResolvedValue(null);
+  const moveThreadToFolder = vi.fn().mockResolvedValue(null);
+  vi.mocked(useThreadActions).mockImplementation(() => ({
+    ...realUseThreadActions(),
+    moveThreadToFolder,
+  }));
+  stack.defer(() => vi.mocked(useThreadActions).mockImplementation(realUseThreadActions));
   vi.mocked(useSidebarFolderLayout).mockReturnValue({
     layout: input.layout,
     available: true,
@@ -131,7 +148,7 @@ function setup(input: {
     routeDraftId: null,
     routeThreadRef: threadRef,
   });
-  return { stack, show, save, handleNewThread };
+  return { stack, show, save, handleNewThread, moveThreadToFolder };
 }
 
 const renderSidebar = () =>
@@ -280,5 +297,83 @@ describe("sidebar folders", () => {
       { environmentId: ENV, projectId: PROJECT.id },
       { tags: ["in:Team"] },
     );
+  });
+
+  it("files a dragged row into the folder it is dropped on, and back under its project", async () => {
+    const { stack, moveThreadToFolder } = setup({ threads: THREADS, layout: [], routeThread: 2 });
+    using _stack = stack;
+    // Rows drag only for a connected environment this client may change.
+    vi.mocked(useConnectedEnvironmentIds).mockReturnValue([ENV]);
+    vi.mocked(useServerConfigs).mockReturnValue(
+      new Map([[ENV, { scratchWorkspaceRoot: null } as unknown as EnvironmentServerConfig]]),
+    );
+    vi.mocked(useEnvironmentScope).mockReturnValue(true);
+    vi.mocked(readEnvironmentScope).mockReturnValue(true);
+    stack.defer(() => {
+      vi.mocked(useConnectedEnvironmentIds).mockRestore();
+      vi.mocked(useServerConfigs).mockRestore();
+      vi.mocked(useEnvironmentScope).mockRestore();
+      vi.mocked(readEnvironmentScope).mockRestore();
+    });
+    await using screen = await renderSidebar();
+    const pointer = (type: string, x: number, y: number) =>
+      new PointerEvent(type, {
+        bubbles: true,
+        cancelable: true,
+        pointerId: 1,
+        isPrimary: true,
+        button: 0,
+        buttons: type === "pointerup" ? 0 : 1,
+        clientX: x,
+        clientY: y,
+      });
+    const drag = async (rowTitle: string, target: Element) => {
+      const row = screen.getByText(rowTitle, { exact: true }).element();
+      const from = row.getBoundingClientRect();
+      const to = target.getBoundingClientRect();
+      await act(() => {
+        row.dispatchEvent(pointer("pointerdown", from.x + 20, from.y + 5));
+        document.dispatchEvent(pointer("pointermove", from.x + 20, from.y + 20));
+        document.dispatchEvent(pointer("pointermove", to.x + 30, to.y + to.height / 2));
+        document.dispatchEvent(pointer("pointerup", to.x + 30, to.y + to.height / 2));
+      });
+    };
+    await expect.element(screen.getByText("Unfiled question")).toBeInTheDocument();
+    await drag("Unfiled question", page.getByRole("button", { name: /^Team/ }).element());
+    expect(moveThreadToFolder).toHaveBeenCalledExactlyOnceWith(
+      { environmentId: ENV, threadId: ThreadId.make("thread-6") },
+      "Team",
+    );
+    moveThreadToFolder.mockClear();
+    await drag("Daily plan", page.getByRole("button", { name: /^work/ }).element());
+    expect(moveThreadToFolder).toHaveBeenCalledExactlyOnceWith(
+      { environmentId: ENV, threadId: ThreadId.make("thread-1") },
+      null,
+    );
+  });
+
+  it("reorders folders by dragging a heading onto the top of another", async () => {
+    const { stack, save } = setup({ threads: THREADS, layout: [], routeThread: 1 });
+    using _stack = stack;
+    await using _screen = await renderSidebar();
+    const team = page.getByRole("button", { name: /^Team/ }).element();
+    const customers = page.getByRole("button", { name: /^Customers/ }).element();
+    const target = customers.closest("li")!;
+    const bounds = target.getBoundingClientRect();
+    const dataTransfer = new DataTransfer();
+    const dragEvent = (type: string) =>
+      new DragEvent(type, {
+        bubbles: true,
+        cancelable: true,
+        dataTransfer,
+        clientX: bounds.x + 20,
+        clientY: bounds.y + 2,
+      });
+    await act(() => {
+      team.dispatchEvent(dragEvent("dragstart"));
+      target.dispatchEvent(dragEvent("dragover"));
+      target.dispatchEvent(dragEvent("drop"));
+    });
+    expect(save).toHaveBeenCalledExactlyOnceWith([{ path: "Team" }, { path: "Customers" }]);
   });
 });

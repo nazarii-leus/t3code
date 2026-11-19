@@ -17,7 +17,12 @@ import {
   WrenchIcon,
 } from "lucide-react";
 import { T, useGT, Var } from "gt-react";
-import { memo, useRef, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import {
+  type DragEvent as ReactDragEvent,
+  memo,
+  useRef,
+  type KeyboardEvent as ReactKeyboardEvent,
+} from "react";
 
 import { cn } from "~/lib/utils";
 import { contextMenuSourceOf } from "../../contextMenuSource";
@@ -41,6 +46,19 @@ export const SIDEBAR_FOLDER_ICONS: Readonly<Record<string, LucideIcon>> = {
   rocket: RocketIcon,
   book: BookOpenIcon,
 };
+
+const FOLDER_DRAG_TYPE = "application/x-t3code-sidebar-folder";
+
+type FolderDropZone = "before" | "after" | "into";
+
+/** Top third places before, bottom third after, the middle nests. */
+function folderDropZone(event: ReactDragEvent<HTMLElement>): FolderDropZone {
+  const bounds = event.currentTarget.getBoundingClientRect();
+  const offset = event.clientY - bounds.top;
+  if (offset < bounds.height / 3) return "before";
+  if (offset > (bounds.height * 2) / 3) return "after";
+  return "into";
+}
 
 export interface SidebarFolderNameEdit {
   readonly value: string;
@@ -98,6 +116,7 @@ export const SidebarUserFolderHeader = memo(function SidebarUserFolderHeader(pro
   edit: SidebarFolderNameEdit | null;
   onToggle: (path: string) => void;
   onNewThread: ((path: string) => void) | null;
+  onFolderDrop?: (from: string, to: string, zone: FolderDropZone) => boolean;
   onContextMenu: (
     path: string,
     position: { x: number; y: number },
@@ -140,7 +159,27 @@ export const SidebarUserFolderHeader = memo(function SidebarUserFolderHeader(pro
   return (
     <li
       data-testid="sidebar-user-folder"
-      className={cn("group/user-folder relative list-none", props.depth === 0 && "mt-2 first:mt-0")}
+      data-sidebar-drop={props.edit ? undefined : `folder:${path}`}
+      className={cn(
+        "group/user-folder relative list-none rounded-(--control-radius) data-sidebar-drop-over:bg-sidebar-row-hover data-[folder-drop-zone=before]:border-t-2 data-[folder-drop-zone=before]:border-ring data-[folder-drop-zone=after]:border-b-2 data-[folder-drop-zone=after]:border-ring data-[folder-drop-zone=into]:bg-sidebar-row-hover",
+        props.depth === 0 && "mt-2 first:mt-0",
+      )}
+      onDragOver={(event) => {
+        if (!props.onFolderDrop || !event.dataTransfer.types.includes(FOLDER_DRAG_TYPE)) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "move";
+        event.currentTarget.dataset.folderDropZone = folderDropZone(event);
+      }}
+      onDragLeave={(event) => {
+        delete event.currentTarget.dataset.folderDropZone;
+      }}
+      onDrop={(event) => {
+        delete event.currentTarget.dataset.folderDropZone;
+        const from = event.dataTransfer.getData(FOLDER_DRAG_TYPE);
+        if (!props.onFolderDrop || from === "") return;
+        event.preventDefault();
+        props.onFolderDrop(from, path, folderDropZone(event));
+      }}
     >
       {props.edit ? (
         <div className="flex h-8 w-full items-center gap-2.5 px-(--sidebar-row-content-inset)">
@@ -149,6 +188,11 @@ export const SidebarUserFolderHeader = memo(function SidebarUserFolderHeader(pro
       ) : (
         <button
           type="button"
+          draggable={props.onFolderDrop !== undefined}
+          onDragStart={(event) => {
+            event.dataTransfer.setData(FOLDER_DRAG_TYPE, path);
+            event.dataTransfer.effectAllowed = "move";
+          }}
           data-sidebar-row={props.rowId}
           data-sidebar-parent={props.parentRowId ?? undefined}
           aria-expanded={!collapsed}
