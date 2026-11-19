@@ -169,6 +169,24 @@ it("drops a hand-edited non-string hidden tag and keeps the rest of the settings
   expect(settings.hideTaggedThreads).toBe(true);
 });
 
+it("drops a hand-edited bad sidebar folder entry and keeps the rest", () => {
+  const settings = decodeServerSettings({
+    sidebarFolders: [
+      { path: "Customers", icon: "users", sort: "title" },
+      { path: 7 },
+      { path: "Customers/PuL", sort: "manual", order: ["thread-1", "/Sub"] },
+      { path: "Tasks", sort: "sideways" },
+    ],
+    hideTaggedThreads: true,
+  });
+  expect(settings.sidebarFolders).toEqual([
+    { path: "Customers", icon: "users", sort: "title" },
+    { path: "Customers/PuL", sort: "manual", order: ["thread-1", "/Sub"] },
+  ]);
+  expect(settings.hideTaggedThreads).toBe(true);
+  expect(decodeServerSettings({}).sidebarFolders).toEqual([]);
+});
+
 describe("ServerSettings secret providers", () => {
   const onePassword = (account: string) => ({
     kind: "one_password",

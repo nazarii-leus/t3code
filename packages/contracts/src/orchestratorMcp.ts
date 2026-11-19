@@ -275,12 +275,22 @@ export const OrchestratorMcpTaskCancelResult = Schema.Struct({
 });
 export type OrchestratorMcpTaskCancelResult = typeof OrchestratorMcpTaskCancelResult.Type;
 
+export const OrchestratorMcpThreadFolder = Schema.String.annotate({
+  description: "Sidebar folder, `Top` or `Top/Sub`, reusing an existing spelling. Omit for none.",
+});
+
+export const OrchestratorMcpThreadParent = Schema.Literal("self").annotate({
+  description: "List it under your thread in the sidebar, in your folder unless `folder` is set.",
+});
+
 export const OrchestratorMcpCreateThreadRequest = Schema.Struct({
   prompt: Schema.optional(OrchestratorMcpPrompt),
   title: Schema.optional(OrchestratorMcpTitle),
   target: Schema.optional(OrchestratorMcpTarget),
   runtimeMode: Schema.optional(OrchestratorMcpRuntimeMode),
   interactionMode: Schema.optional(OrchestratorMcpInteractionMode),
+  folder: Schema.optional(OrchestratorMcpThreadFolder),
+  parent: Schema.optional(OrchestratorMcpThreadParent),
 });
 export type OrchestratorMcpCreateThreadRequest = typeof OrchestratorMcpCreateThreadRequest.Type;
 
@@ -425,6 +435,12 @@ export const OrchestratorMcpThreadListItem = Schema.Struct({
   pendingBackgroundTasks: Schema.optional(Schema.Array(OrchestratorMcpThreadBackgroundTask)),
   parentThreadId: Schema.NullOr(ThreadId),
   relationshipToParent: Schema.NullOr(Schema.Literals(["fork", "subagent"])),
+  /** Sidebar folder. Absent when unfiled and from linked environments that predate it. */
+  folder: Schema.optional(Schema.String),
+  /** The thread it was started under as a sub-session. Absent from linked environments that predate it. */
+  subSessionOf: Schema.optional(ThreadId),
+  /** Waits for the user: a question, approval, plan, usage limit or guest. Absent from linked environments that predate it. */
+  needsYou: Schema.optional(Schema.Boolean),
   /** The linked environment's thread that delegated this one; absent otherwise. */
   delegatedFrom: Schema.optional(OrchestrationV2DelegatedFrom),
   itemCount: NonNegativeInt,

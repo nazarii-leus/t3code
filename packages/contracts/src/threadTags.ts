@@ -5,7 +5,7 @@ import { TrimmedNonEmptyString } from "./baseSchemas.ts";
 
 /** Tags match by exact spelling and case after trimming. */
 export const ThreadTag = TrimmedNonEmptyString.check(
-  Schema.isMaxLength(64),
+  Schema.isMaxLength(128),
   Schema.makeFilter((value) =>
     /[\p{Cc}]/u.test(value) ? "A thread tag must be a single line of text." : true,
   ),
