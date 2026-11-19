@@ -50,12 +50,25 @@ interface Flow {
   readonly owner: string;
   readonly expiresAt: number;
   complete?: ((callbackUrl: string) => Effect.Effect<void, ProviderSetupError>) | undefined;
+  methodId?: string | undefined;
+  connection?: boolean;
   fiber?: Fiber.Fiber<void>;
   responseFiber?: Fiber.Fiber<void, ProviderSetupError>;
   respond:
     | ((response: ProviderAuthResponse) => Effect.Effect<void, ProviderSetupError>)
     | undefined;
 }
+
+const methodFields = ["id", "name", "description", "type", "accountEmail", "canRemove"] as const;
+const sameMethods = (
+  current: ReadonlyArray<ProviderAuthMethod> | undefined,
+  next: ReadonlyArray<ProviderAuthMethod>,
+) =>
+  current !== undefined &&
+  current.length === next.length &&
+  current.every((method, index) =>
+    methodFields.every((field) => method[field] === next[index]?.[field]),
+  );
 
 export const make = Effect.fn("ProviderAuthFlow.make")(function* (options: {
   readonly instanceId: ProviderInstanceId;
@@ -125,10 +138,13 @@ export const make = Effect.fn("ProviderAuthFlow.make")(function* (options: {
 
   const refreshMethods = options.methods.pipe(
     Effect.flatMap((methods) =>
-      SubscriptionRef.update(snapshot, (current) => ({
-        ...current,
-        state: { ...current.state, methods },
-      })),
+      // Providers re-read their methods on every status check; publish only a change.
+      sameMethods(snapshot.value.state.methods, methods)
+        ? Effect.void
+        : SubscriptionRef.update(snapshot, (current) => ({
+            ...current,
+            state: { ...current.state, methods },
+          })),
     ),
     Effect.catch((error) =>
       SubscriptionRef.update(snapshot, (current) => ({
@@ -213,14 +229,16 @@ export const make = Effect.fn("ProviderAuthFlow.make")(function* (options: {
         });
       }),
     ),
-    isChangingCredentials: Effect.sync(() => operation !== "idle"),
+    isChangingCredentials: Effect.sync(
+      () => operation !== "idle" && !(operation === "auth" && active?.connection === true),
+    ),
     withAccess: (task) =>
       Effect.uninterruptibleMask((restore) =>
         Effect.gen(function* () {
           const parent = yield* Scope.Scope;
           const child = yield* lock.withPermit(
             Effect.gen(function* () {
-              if (operation !== "idle")
+              if (operation !== "idle" && !(operation === "auth" && active?.connection))
                 return yield* new ProviderSetupError({
                   instanceId: options.instanceId,
                   operation: "session",
@@ -253,7 +271,12 @@ export const make = Effect.fn("ProviderAuthFlow.make")(function* (options: {
     start: (owner, stopSessions = Effect.void, selectedMethodId, returnUrl, callbackMode) =>
       lock.withPermit(
         Effect.gen(function* () {
-          if (operation === "auth" && active?.owner === owner) return snapshot.value.state;
+          if (
+            operation === "auth" &&
+            active?.owner === owner &&
+            (selectedMethodId === undefined || selectedMethodId === active.methodId)
+          )
+            return snapshot.value.state;
           if (operation !== "idle")
             return yield* new ProviderSetupError({
               instanceId: options.instanceId,
@@ -274,6 +297,7 @@ export const make = Effect.fn("ProviderAuthFlow.make")(function* (options: {
             id,
             owner,
             expiresAt: (yield* Clock.currentTimeMillis) + timeoutMs,
+            methodId: selectedMethodId,
             respond: undefined,
           };
           active = flow;
@@ -283,6 +307,7 @@ export const make = Effect.fn("ProviderAuthFlow.make")(function* (options: {
             methods: snapshot.value.state.methods ?? [],
             phase: "starting",
             flowId: id,
+            ...(selectedMethodId ? { methodId: selectedMethodId } : {}),
             expiresAt: DateTime.formatIso(DateTime.makeUnsafe(flow.expiresAt)),
             message: "Starting sign-in.",
           };
@@ -291,13 +316,17 @@ export const make = Effect.fn("ProviderAuthFlow.make")(function* (options: {
             const methods = yield* options.methods;
             yield* publish(flow, { methods });
             const methodId = selectedMethodId ?? options.defaultMethodId ?? methods[0]?.id;
-            if (!methodId || !methods.some((method) => method.id === methodId))
+            const method = methods.find((candidate) => candidate.id === methodId);
+            if (!methodId || !method)
               return yield* new ProviderSetupError({
                 instanceId: options.instanceId,
                 operation: "start",
                 detail: "The provider did not advertise this sign-in method.",
               });
-            yield* stopSessions.pipe(Effect.ensuring(stopOwnedSessions));
+            yield* publish(flow, { methodId });
+            flow.methodId = methodId;
+            flow.connection = method.type === "connection";
+            if (!flow.connection) yield* stopSessions.pipe(Effect.ensuring(stopOwnedSessions));
             yield* options.authenticate(methodId, {
               flowId: id,
               expiresAt: flow.expiresAt,

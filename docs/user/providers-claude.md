@@ -21,6 +21,10 @@ the browser cannot reach the final localhost page; paste that page's address int
 sign-in panel. With **Account email** set, the provider shows a warning when a different
 account is signed in. On Windows, sign in with `claude auth login` as described below.
 
+Each account signs in once to the MCP servers that need it, such as a company Jira server.
+They are listed under the account's sign-in, each with its own **Sign in**; on mobile they
+are in the account's menu.
+
 For a completely separate configuration, such as a preset with different settings or a
 router connection, use its own Claude config directory instead. On the environment's
 machine, create the login:

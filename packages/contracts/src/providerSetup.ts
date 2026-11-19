@@ -27,7 +27,8 @@ export const ProviderAuthMethod = Schema.Struct({
   canRemove: Schema.optionalKey(Schema.Boolean),
   name: TrimmedNonEmptyString,
   description: Schema.NullOr(Schema.String),
-  type: Schema.Literals(["agent", "terminal", "credentials"]),
+  // A connection signs in to a service the provider uses; it leaves the account and its sessions alone.
+  type: Schema.Literals(["agent", "terminal", "credentials", "connection"]),
 });
 export type ProviderAuthMethod = typeof ProviderAuthMethod.Type;
 
@@ -124,6 +125,8 @@ export const ProviderAuthState = Schema.Struct({
     "cancelled",
   ]),
   flowId: Schema.NullOr(SetupOperationId),
+  /** The method of the current or last sign-in. */
+  methodId: Schema.optionalKey(SetupOperationId),
   authorizationUrl: Schema.NullOr(SignInUrl),
   expiresAt: Schema.NullOr(IsoDateTime),
   message: Schema.NullOr(Schema.String),

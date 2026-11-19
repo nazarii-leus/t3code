@@ -3330,6 +3330,7 @@
   "89c5ab924f851b78": "Supprimer le checkout",
   "c165e95dd1b35bfd": "Cette session peut afficher les fournisseurs de {environment} mais pas modifier leurs paramètres.",
   "d94f2f73976440c1": "Impossible de mettre à jour la connexion au fournisseur.",
+  "0595a3dddcfced3b": "Se connecter à {name}",
   "2e5faa8c1b194a16": "Recherche des méthodes de connexion…",
   "300d4800cd6292f9": "Aucune connexion dans l’app proposée. Suivez la documentation du fournisseur pour terminer la configuration.",
   "e8aaa11d280f26d8": "Connectez-vous pour charger les modèles",

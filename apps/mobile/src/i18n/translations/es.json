@@ -3330,6 +3330,7 @@
   "89c5ab924f851b78": "Quitar checkout",
   "c165e95dd1b35bfd": "Esta sesión puede ver los proveedores de {environment}, pero no cambiar sus ajustes.",
   "d94f2f73976440c1": "No se pudo actualizar el inicio de sesión del proveedor.",
+  "0595a3dddcfced3b": "Iniciar sesión en {name}",
   "2e5faa8c1b194a16": "Buscando métodos de inicio de sesión…",
   "300d4800cd6292f9": "No se ofrece inicio de sesión en la app. Sigue la documentación del proveedor para terminar la configuración.",
   "e8aaa11d280f26d8": "Conéctate para cargar los modelos",

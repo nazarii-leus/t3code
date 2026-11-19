@@ -3330,6 +3330,7 @@
   "89c5ab924f851b78": "Remover checkout",
   "c165e95dd1b35bfd": "Esta sessão pode ver os provedores de {environment}, mas não pode alterar as configurações deles.",
   "d94f2f73976440c1": "Não foi possível atualizar o login do provedor.",
+  "0595a3dddcfced3b": "Entrar em {name}",
   "2e5faa8c1b194a16": "Descobrindo métodos de login…",
   "300d4800cd6292f9": "Nenhum login no app foi anunciado. Siga a documentação do provedor para concluir a configuração.",
   "e8aaa11d280f26d8": "Conecte para carregar os modelos",

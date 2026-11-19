@@ -7,6 +7,7 @@ import {
 } from "@t3tools/client-runtime/state/runtime";
 import type {
   EnvironmentId,
+  ProviderAuthMethod,
   ProviderAuthRespondInput,
   ProviderAuthResponse,
   ProviderInstanceId,
@@ -37,12 +38,15 @@ export function ProviderAuthenticationSection({
   instanceId,
   provider,
   readOnly,
+  connection,
 }: {
   readonly environmentId: EnvironmentId;
   readonly environmentLabel: string;
   readonly instanceId: ProviderInstanceId;
   readonly provider: ServerProvider;
   readonly readOnly: boolean;
+  /** Draws the row of one connection, such as an MCP server, instead of the account. */
+  readonly connection?: ProviderAuthMethod;
 }) {
   const gt = useGT();
   const target = { environmentId, input: { instanceId } };
@@ -53,6 +57,7 @@ export function ProviderAuthenticationSection({
   const complete = useAtomCommand(serverEnvironment.completeProviderAuth, commands);
   const cancel = useAtomCommand(serverEnvironment.cancelProviderAuth, commands);
   const logout = useAtomCommand(serverEnvironment.logoutProviderAuth, commands);
+  const removeMethod = useAtomCommand(serverEnvironment.removeProviderAuthMethod, commands);
   const [methodId, setMethodId] = useState("");
   const [draft, setDraft] = useState({ id: "", values: {} as Record<string, string> });
   const [error, setError] = useState<string | null>(null);
@@ -61,19 +66,29 @@ export function ProviderAuthenticationSection({
   const terminalQueue = useRef<ProviderAuthRespondInput[]>([]);
   const terminalSending = useRef(false);
   const auth = query.data;
-  const interaction = auth?.interaction;
+  const connections = auth?.methods?.filter((method) => method.type === "connection") ?? [];
+  const accountMethods = auth?.methods?.filter((method) => method.type !== "connection");
+  // One sign-in runs at a time; each row shows it only when it is that row's.
+  const ownsFlow = connection
+    ? auth?.methodId === connection.id
+    : !connections.some((method) => method.id === auth?.methodId);
+  const interaction = ownsFlow ? auth?.interaction : undefined;
   const active =
-    auth?.phase === "starting" || auth?.phase === "waiting" || auth?.phase === "verifying";
+    ownsFlow &&
+    (auth?.phase === "starting" || auth?.phase === "waiting" || auth?.phase === "verifying");
   const signedIn =
-    provider.auth.status === "authenticated" ||
-    (provider.auth.status === "unknown" && auth?.phase === "succeeded");
+    !connection &&
+    (provider.auth.status === "authenticated" ||
+      (provider.auth.status === "unknown" && auth?.phase === "succeeded" && ownsFlow));
   const isDiscovering =
+    !connection &&
     provider.driver === "acpRegistry" &&
     !active &&
     !signedIn &&
     !query.error &&
     auth?.methods === undefined;
   const needsExternalSetup =
+    !connection &&
     !active &&
     !signedIn &&
     (provider.setup?.canAuthenticate === false ||
@@ -93,23 +108,31 @@ export function ProviderAuthenticationSection({
           : interaction?.type === "credentials"
             ? gt("Enter your credentials below.")
             : gt("Finish signing in in your browser.")
-    : signedIn
-      ? gt("Signed in.")
-      : isDiscovering
-        ? gt("Discovering sign-in methods…")
-        : needsExternalSetup
-          ? gt("No in-app sign-in advertised. Follow the provider's docs to finish setup.")
-          : usesCredentials
-            ? gt("Connect on {environment} to load models.", { environment: environmentLabel })
-            : gt("Sign in on {environment}.", { environment: environmentLabel });
-  const statusMessage = auth?.phase === "failed" ? auth.message : null;
+    : connection
+      ? (connection.description ?? "")
+      : signedIn
+        ? gt("Signed in.")
+        : isDiscovering
+          ? gt("Discovering sign-in methods…")
+          : needsExternalSetup
+            ? gt("No in-app sign-in advertised. Follow the provider's docs to finish setup.")
+            : usesCredentials
+              ? gt("Connect on {environment} to load models.", { environment: environmentLabel })
+              : gt("Sign in on {environment}.", { environment: environmentLabel });
+  const statusMessage = ownsFlow && auth?.phase === "failed" ? auth.message : null;
   const disabled = readOnly || pending || query.error !== null || isDiscovering;
+  // Another row's sign-in holds the provider until it finishes.
+  const otherFlowActive =
+    !ownsFlow &&
+    (auth?.phase === "starting" || auth?.phase === "waiting" || auth?.phase === "verifying");
   const draftId = `${auth?.flowId ?? ""}:${interaction?.id ?? ""}`;
   const values = draft.id === draftId ? draft.values : {};
   const url =
     interaction?.type === "browser" || interaction?.type === "deviceCode"
       ? interaction.url
-      : auth?.authorizationUrl;
+      : ownsFlow
+        ? auth?.authorizationUrl
+        : null;
 
   async function run(command: () => Promise<AtomCommandResult<unknown, unknown>>) {
     if (pendingRef.current) return false;
@@ -174,9 +197,9 @@ export function ProviderAuthenticationSection({
     setDraft({ id: draftId, values: { ...values, [name]: value } });
   }
 
-  return (
+  const row = (
     <SettingsRow
-      title={gt("Account")}
+      title={connection ? connection.name : gt("Account")}
       description={
         signedIn && !active && provider.auth.email?.trim() ? (
           <span>
@@ -205,15 +228,15 @@ export function ProviderAuthenticationSection({
       }
       control={
         <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-          {!active && (auth?.methods?.length ?? 0) > 1 ? (
+          {!connection && !active && (accountMethods?.length ?? 0) > 1 ? (
             <Select
-              value={auth?.methods?.some((method) => method.id === methodId) ? methodId : ""}
+              value={accountMethods?.some((method) => method.id === methodId) ? methodId : ""}
               disabled={disabled}
               onValueChange={(value) => setMethodId(value ?? "")}
             >
               <SelectTrigger size="sm" aria-label={gt("Sign-in method")} className="w-44">
                 <SelectValue>
-                  {auth?.methods?.find((method) => method.id === methodId)?.name ??
+                  {accountMethods?.find((method) => method.id === methodId)?.name ??
                     gt("Provider default")}
                 </SelectValue>
               </SelectTrigger>
@@ -221,7 +244,7 @@ export function ProviderAuthenticationSection({
                 <SelectItem value="">
                   <T>Provider default</T>
                 </SelectItem>
-                {auth?.methods?.map((method) => (
+                {accountMethods?.map((method) => (
                   <SelectItem key={method.id} value={method.id}>
                     {method.name}
                   </SelectItem>
@@ -305,16 +328,20 @@ export function ProviderAuthenticationSection({
               <Button
                 size="sm"
                 variant="outline"
-                disabled={disabled || !provider.enabled || !provider.installed || !auth}
+                disabled={
+                  disabled || otherFlowActive || !provider.enabled || !provider.installed || !auth
+                }
                 onClick={() =>
                   void run(() =>
                     start({
                       environmentId,
                       input: {
                         instanceId,
-                        ...(methodId && auth?.methods?.some((method) => method.id === methodId)
-                          ? { methodId }
-                          : {}),
+                        ...(connection
+                          ? { methodId: connection.id }
+                          : methodId && accountMethods?.some((method) => method.id === methodId)
+                            ? { methodId }
+                            : {}),
                       },
                     }),
                   )
@@ -322,7 +349,7 @@ export function ProviderAuthenticationSection({
               >
                 {signedIn
                   ? gt("Change account")
-                  : auth?.phase === "failed" || auth?.phase === "cancelled"
+                  : ownsFlow && (auth?.phase === "failed" || auth?.phase === "cancelled")
                     ? usesCredentials
                       ? gt("Retry connection")
                       : gt("Retry sign-in")
@@ -351,6 +378,20 @@ export function ProviderAuthenticationSection({
                       if (confirmed) void run(() => logout(target));
                     });
                 }}
+              >
+                <T>Sign out</T>
+              </Button>
+            ) : null}
+            {!active && connection?.canRemove ? (
+              <Button
+                size="sm"
+                variant="ghost"
+                disabled={disabled || otherFlowActive}
+                onClick={() =>
+                  void run(() =>
+                    removeMethod({ environmentId, input: { instanceId, methodId: connection.id } }),
+                  )
+                }
               >
                 <T>Sign out</T>
               </Button>
@@ -516,5 +557,22 @@ export function ProviderAuthenticationSection({
         </>
       ) : null}
     </SettingsRow>
+  );
+  if (connection) return row;
+  return (
+    <>
+      {row}
+      {connections.map((method) => (
+        <ProviderAuthenticationSection
+          key={method.id}
+          environmentId={environmentId}
+          environmentLabel={environmentLabel}
+          instanceId={instanceId}
+          provider={provider}
+          readOnly={readOnly}
+          connection={method}
+        />
+      ))}
+    </>
   );
 }

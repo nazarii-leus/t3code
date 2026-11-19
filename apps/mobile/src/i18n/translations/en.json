@@ -3336,6 +3336,7 @@
   "89c5ab924f851b78": "Remove checkout",
   "c165e95dd1b35bfd": "This session can view {environment}''s providers but can't change their settings.",
   "d94f2f73976440c1": "Could not update provider sign-in.",
+  "0595a3dddcfced3b": "Sign in to {name}",
   "2e5faa8c1b194a16": "Discovering sign-in methods…",
   "300d4800cd6292f9": "No in-app sign-in advertised. Follow the provider's docs to finish setup.",
   "e8aaa11d280f26d8": "Connect to load models",

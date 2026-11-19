@@ -216,9 +216,13 @@ function ProviderAccount({
   const values = draft.id === draftId ? draft.values : {};
   const active =
     state?.phase === "starting" || state?.phase === "waiting" || state?.phase === "verifying";
+  // A finished connection sign-in, such as an MCP server's, says nothing about the account.
+  const connectionFlow = state?.methods?.some(
+    (method) => method.type === "connection" && method.id === state.methodId,
+  );
   const signedIn =
     provider.auth.status === "authenticated" ||
-    (provider.auth.status === "unknown" && state?.phase === "succeeded");
+    (provider.auth.status === "unknown" && state?.phase === "succeeded" && !connectionFlow);
   const isDiscovering =
     provider.driver === "acpRegistry" &&
     !active &&
@@ -282,7 +286,17 @@ function ProviderAccount({
   }
   const name = provider.displayName ?? provider.driver;
   const email = signedIn && !active && provider.enabled ? provider.auth.email?.trim() : undefined;
-  const methods = state?.methods ?? [];
+  const methods = state?.methods?.filter((method) => method.type !== "connection") ?? [];
+  // Connections, such as MCP servers, sign in from the menu without changing the account.
+  const connectionActions: MenuAction[] = (state?.methods ?? [])
+    .filter((method) => method.type === "connection")
+    .map((method) => ({
+      id: `method:${method.id}`,
+      title: gt("Sign in to {name}", { name: method.name }),
+      ...(method.description ? { subtitle: method.description } : {}),
+      attributes: { disabled: disabled || active },
+    }));
+  const otherActions = [...connectionActions, ...extraActions];
   // The status line says why a provider that is missing or turned off can't sign in.
   const canSignIn =
     !active &&
@@ -399,17 +413,17 @@ function ProviderAccount({
           },
         ]
       : []),
-    ...extraActions,
+    ...otherActions,
   ];
   // Signed in, the account menu carries these; otherwise they get their own menu beside Sign in.
   const extrasMenu =
-    extraActions.length > 0 && !signedIn && !active && !pending ? (
+    otherActions.length > 0 && !signedIn && !active && !pending ? (
       <Menu
         accessible
         accessibilityRole="button"
         accessibilityLabel={gt("{provider} account options", { provider: name })}
         title={name}
-        actions={[...extraActions]}
+        actions={otherActions}
         onPressAction={({ nativeEvent }) => onMenuAction(nativeEvent.event)}
       >
         <ControlPill

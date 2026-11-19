@@ -62,6 +62,7 @@ import {
   mergeClaudeProcessEnvironment,
   resolveClaudeHomePath,
 } from "./ClaudeHome.ts";
+import type { ProviderAuthController } from "@t3tools/provider-core/server/auth";
 import { makeClaudeAuth } from "./ClaudeAuth.ts";
 import {
   materializeClaudeShadowHome,
@@ -322,7 +323,12 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
         ),
       );
 
+    // Set once the sign-in exists; each check re-reads the account's MCP servers and their sign-ins.
+    const authRef = yield* Ref.make<ProviderAuthController | undefined>(undefined);
     const checkProvider = prepareShadowHome.pipe(
+      Effect.andThen(
+        Ref.get(authRef).pipe(Effect.flatMap((auth) => auth?.refreshMethods ?? Effect.void)),
+      ),
       Effect.andThen(catalogService.refreshInBackground),
       Effect.andThen(
         modelCatalog.pipe(
@@ -469,6 +475,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
           binaryPath: effectiveConfig.binaryPath,
           environment: yield* makeClaudeEnvironment(effectiveConfig, processEnv),
           configDir,
+          accountFile: accountConfigPath,
           cwd: stateDir,
           accountEmail: effectiveConfig.accountEmail,
           refresh: Cache.invalidateAll(capabilitiesProbeCache).pipe(
@@ -476,6 +483,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
           ),
         })
       : undefined;
+    yield* Ref.set(authRef, auth);
 
     return {
       instanceId,

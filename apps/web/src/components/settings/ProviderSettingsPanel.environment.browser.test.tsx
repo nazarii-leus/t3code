@@ -514,6 +514,43 @@ describe("EnvironmentProviderSettings provider list", () => {
   });
 });
 
+describe("EnvironmentProviderSettings connections", () => {
+  it("signs in to an account's MCP server from its own row", async () => {
+    await setup();
+    const claudeId = ProviderInstanceId.make("claudeAgent");
+    state.providerAuth = {
+      instanceId: claudeId,
+      phase: "idle",
+      flowId: null,
+      authorizationUrl: null,
+      expiresAt: null,
+      message: null,
+      methods: [
+        { id: "claudeai", name: "Claude account", description: null, type: "agent" },
+        { id: "mcp:jira", name: "jira", description: "Not signed in", type: "connection" },
+      ],
+    };
+    await setProviders([
+      {
+        ...provider(),
+        instanceId: claudeId,
+        driver: ProviderDriverKind.make("claudeAgent"),
+        setup: { canAuthenticate: true, canInstall: false },
+      },
+    ]);
+    await using _screen = await render(panel({ targetInstanceId: claudeId }));
+
+    const jira = page.getByRole("heading", { name: "jira" }).element().parentElement!;
+    expect(jira.textContent).toContain("Not signed in");
+    await userEvent.click(page.elementLocator(jira).getByRole("button", { name: "Sign in" }));
+
+    expect(state.startAuth).toHaveBeenCalledWith({
+      environmentId,
+      input: { instanceId: claudeId, methodId: "mcp:jira" },
+    });
+  });
+});
+
 describe("EnvironmentProviderSettings instance removal", () => {
   it("resets a configured default instance only once the user confirms", async () => {
     await setup();

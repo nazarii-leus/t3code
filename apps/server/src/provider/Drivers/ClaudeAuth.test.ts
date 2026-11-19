@@ -13,18 +13,26 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Stream from "effect/Stream";
 
+import * as NodePtyAdapter from "../../terminal/NodePtyAdapter.ts";
 import { makeClaudeAuth } from "./ClaudeAuth.ts";
 
 const owner = "t3-auth-session-owner";
 
-// Behaves like `claude auth login`: opens its link through $BROWSER, waits on a 127.0.0.1
-// callback, and gives up on a callback with a foreign state.
+// Behaves like `claude auth login` and `claude mcp login`: opens its link through $BROWSER, waits
+// on a 127.0.0.1 callback, and gives up on a callback with a foreign state. Like the real CLI,
+// `mcp login` needs a terminal.
 const STUB = `
 const fs = require("node:fs");
 const http = require("node:http");
 const { execFileSync } = require("node:child_process");
+const [command, action, mcpServer] = process.argv.slice(2);
 fs.appendFileSync(process.env.STUB_LOG, process.argv.slice(2).join(" ") + "\\n");
-if (process.argv[3] === "logout") process.exit(0);
+const credentials = process.env.CLAUDE_CONFIG_DIR + "/.credentials.json";
+if (action === "logout") {
+  if (command === "mcp") fs.writeFileSync(credentials, JSON.stringify({ mcpOAuth: {} }));
+  process.exit(0);
+}
+if (command === "mcp" && !process.stdin.isTTY) process.exit(1);
 if (process.env.STUB_FAIL) {
   console.error("Paste code here if prompted > Login failed: account suspended");
   process.exit(1);
@@ -34,6 +42,9 @@ const server = http.createServer((request, response) => {
   if (url.searchParams.get("state") !== "stub-state") {
     response.writeHead(400).end();
     process.exit(1);
+  }
+  if (command === "mcp") {
+    fs.writeFileSync(credentials, JSON.stringify({ mcpOAuth: { [mcpServer + "|1"]: { accessToken: "t" } } }));
   }
   response.writeHead(302, { location: "https://platform.claude.com/oauth/code/success" });
   response.end(() => process.exit(0));
@@ -62,14 +73,26 @@ const harness = Effect.fn("ClaudeAuth.test.harness")(function* (env: Record<stri
   const directory = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3code-claude-auth-" });
   const binaryPath = path.join(directory, "claude");
   const log = path.join(directory, "calls.log");
+  const configDir = path.join(directory, "home");
   yield* fileSystem.writeFileString(binaryPath, `#!${process.execPath}\n${STUB}`, { mode: 0o755 });
   yield* fileSystem.writeFileString(log, "");
+  yield* fileSystem.makeDirectory(configDir);
+  yield* fileSystem.writeFileString(
+    path.join(configDir, ".claude.json"),
+    JSON.stringify({
+      mcpServers: {
+        jira: { type: "http", url: "https://jira.example.com/mcp" },
+        local: { type: "stdio", command: "local-mcp" },
+      },
+    }),
+  );
   let refreshes = 0;
   const auth = yield* makeClaudeAuth({
     instanceId: ProviderInstanceId.make("claude-work"),
     binaryPath,
-    environment: { ...process.env, STUB_LOG: log, ...env },
-    configDir: path.join(directory, "home"),
+    environment: { ...process.env, STUB_LOG: log, CLAUDE_CONFIG_DIR: configDir, ...env },
+    configDir,
+    accountFile: path.join(configDir, ".claude.json"),
     cwd: directory,
     accountEmail: "work@example.com",
     // Signed in after a login, signed out after a logout, as the probe would report.
@@ -89,7 +112,11 @@ const harness = Effect.fn("ClaudeAuth.test.harness")(function* (env: Record<stri
   };
 });
 
-const services = Layer.mergeAll(NodeServices.layer, NodeCrypto.layer);
+const services = Layer.mergeAll(
+  NodeServices.layer,
+  NodeCrypto.layer,
+  NodePtyAdapter.layer.pipe(Layer.provide(NodeServices.layer)),
+);
 
 describe("ClaudeAuth", () => {
   // Live clock: a real CLI process and its loopback callback.
@@ -137,6 +164,39 @@ describe("ClaudeAuth", () => {
         failed.message,
         "Claude sign-in did not finish: Login failed: account suspended",
       );
+    }).pipe(Effect.scoped, Effect.provide(services)),
+  );
+  it.live("signs an MCP server in through a terminal, then out again", () =>
+    Effect.gen(function* () {
+      const { auth, calls } = yield* harness();
+      const connection = (description: string) =>
+        auth.subscribe(owner).pipe(
+          Stream.map((state) => state.methods?.find((method) => method.id === "mcp:jira")),
+          Stream.filter((method) => method?.description === description),
+          Stream.runHead,
+          Effect.map(Option.getOrThrow),
+        );
+      assert.strictEqual((yield* connection("Not signed in"))?.type, "connection");
+
+      yield* auth.start(owner, undefined, "mcp:jira");
+      const waiting = yield* phase(auth, "waiting");
+      assert(waiting.interaction?.type === "browser");
+      const port = new URL(new URL(waiting.interaction.url).searchParams.get("redirect_uri") ?? "")
+        .port;
+      yield* auth.complete(owner, {
+        flowId: waiting.flowId ?? "",
+        callbackUrl: `http://localhost:${port}/callback?code=c&state=stub-state`,
+      });
+
+      assert.strictEqual((yield* phase(auth, "succeeded")).methodId, "mcp:jira");
+      assert.isTrue((yield* connection("Signed in"))?.canRemove);
+
+      yield* auth.removeMethod!("mcp:jira");
+      yield* connection("Not signed in");
+      assert.deepStrictEqual((yield* calls).trim().split("\n"), [
+        "mcp login jira",
+        "mcp logout jira",
+      ]);
     }).pipe(Effect.scoped, Effect.provide(services)),
   );
 });

@@ -3336,6 +3336,7 @@
   "89c5ab924f851b78": "Ta bort utcheckning",
   "c165e95dd1b35bfd": "Den här sessionen kan visa leverantörerna för {environment} men inte ändra deras inställningar.",
   "d94f2f73976440c1": "Kunde inte uppdatera leverantörsinloggningen.",
+  "0595a3dddcfced3b": "Logga in på {name}",
   "2e5faa8c1b194a16": "Söker efter inloggningsmetoder…",
   "300d4800cd6292f9": "Ingen inloggning i appen erbjuds. Följ leverantörens dokumentation för att slutföra konfigurationen.",
   "e8aaa11d280f26d8": "Anslut för att läsa in modeller",

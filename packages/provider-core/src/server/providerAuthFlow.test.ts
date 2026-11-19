@@ -532,3 +532,46 @@ it.effect("profile import stops owned sessions and gates access until credential
     );
   }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );
+
+it.effect("a connection sign-in keeps sessions running and names its method", () =>
+  Effect.gen(function* () {
+    let stopped = 0;
+    const stop = Effect.sync(() => {
+      stopped += 1;
+    });
+    const started = yield* Deferred.make<void>();
+    const release = yield* Deferred.make<void>();
+    const controller = yield* ProviderAuthFlow.make({
+      instanceId,
+      credentialBinding: { owner: "provider", key: "shared-agent" },
+      methods: Effect.succeed([
+        method,
+        { id: "mcp:jira", name: "jira", description: null, type: "connection" as const },
+      ]),
+      authenticate: (methodId) =>
+        methodId === "mcp:jira"
+          ? Deferred.succeed(started, undefined).pipe(Effect.andThen(Deferred.await(release)))
+          : Effect.void,
+      logout: Effect.void,
+    });
+    const finished = (methodId: string) =>
+      controller.subscribe("owner").pipe(
+        Stream.filter((state) => state.phase === "succeeded" && state.methodId === methodId),
+        Stream.runHead,
+      );
+
+    yield* controller.start("owner", stop, "mcp:jira");
+    yield* Deferred.await(started);
+    assert.isFalse(yield* controller.isChangingCredentials!);
+    yield* controller.withAccess!(Effect.void);
+    const other = yield* Effect.flip(controller.start("owner", stop, "browser"));
+    assert.strictEqual(other.detail, "Provider setup is already in progress.");
+    yield* Deferred.succeed(release, undefined);
+    yield* finished("mcp:jira");
+    assert.strictEqual(stopped, 0);
+
+    yield* controller.start("owner", stop, "browser");
+    yield* finished("browser");
+    assert.strictEqual(stopped, 1);
+  }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
+);
