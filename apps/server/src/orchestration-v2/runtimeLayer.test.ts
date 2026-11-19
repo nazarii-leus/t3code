@@ -41,6 +41,8 @@ import {
   type ServerProvider,
   ThreadId,
   DEFAULT_SERVER_SETTINGS,
+  planThreadFolderTagChanges,
+  threadFolderOf,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as DateTime from "effect/DateTime";
@@ -3550,6 +3552,53 @@ const writeHtmlRenderRun = Effect.fn("test.writeHtmlRenderRun")(function* (input
 });
 
 it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
+  it.effect("creates a thread with its folder tag and moves it without leaving it unfiled", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const threadId = ThreadId.make("runtime-layer-folder-thread");
+      const projectId = ProjectId.make("runtime-layer-folder-project");
+      yield* seedProject({
+        projectId,
+        title: "Folder project",
+        workspaceRoot: "/workspace/folder",
+        defaultModelSelection: null,
+        createdAt: "2026-09-07T00:00:00.000Z",
+      });
+      const parentTag = `parent:${"p".repeat(75)}`;
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        createdBy: "agent",
+        creationSource: "mcp",
+        commandId: CommandId.make("runtime-layer-folder-create"),
+        threadId,
+        projectId,
+        title: "Filed thread",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        tags: ["in:Team", parentTag, "in:Team"],
+      });
+      const tagsNow = Effect.map(
+        orchestrator.getShellSnapshot(),
+        (shell) => shell.threads.find((thread) => thread.id === threadId)?.tags ?? [],
+      );
+      assert.deepEqual(yield* tagsNow, ["in:Team", parentTag]);
+
+      for (const [index, change] of planThreadFolderTagChanges(yield* tagsNow, "Tasks").entries()) {
+        yield* orchestrator.dispatch({
+          type: "thread.tag.set",
+          commandId: CommandId.make(`runtime-layer-folder-move-${index}`),
+          threadId,
+          ...change,
+        });
+        assert.equal(threadFolderOf(yield* tagsNow)?.path, "Tasks", `after command ${index}`);
+      }
+      assert.deepEqual(yield* tagsNow, [parentTag, "in:Tasks"]);
+    }),
+  );
+
   it.effect("applies lifecycle commands idempotently and emits archive/removal shell deltas", () =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;

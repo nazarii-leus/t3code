@@ -3797,6 +3797,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         rootThreadId: command.threadId,
       },
       forkedFrom: null,
+      ...(command.tags?.length ? { tags: [...new Set(command.tags)] } : {}),
       createdAt: now,
       updatedAt: now,
       archivedAt: null,
