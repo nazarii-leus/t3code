@@ -1,6 +1,8 @@
 import {
+  moveSidebarTopFolder,
   parseThreadFolderPath,
-  renameThreadFolderPath,
+  placeSidebarFolderUnit,
+  renameSidebarFolder,
   type SidebarFolderEntry,
   type SidebarFolderSort,
   threadFolderOf,
@@ -295,107 +297,6 @@ export function resolveAdjacentAttentionKey(input: {
 }
 
 type Layout = ReadonlyArray<SidebarFolderEntry>;
-
-const updateEntry = (
-  layout: Layout,
-  path: string,
-  update: (entry: SidebarFolderEntry) => SidebarFolderEntry,
-): Layout =>
-  upsertSidebarFolder(layout, path).map((entry) => (entry.path === path ? update(entry) : entry));
-
-/** Adds the folder (and its top folder) when missing. */
-export function upsertSidebarFolder(layout: Layout, path: string): Layout {
-  const parsed = parseThreadFolderPath(path);
-  if (parsed === null) return layout;
-  const next = [...layout];
-  if (!next.some((entry) => entry.path === parsed.top)) next.push({ path: parsed.top });
-  if (parsed.sub !== null && !next.some((entry) => entry.path === parsed.path)) {
-    next.push({ path: parsed.path });
-  }
-  return next;
-}
-
-const withoutOrderKey = (entry: SidebarFolderEntry, key: string): SidebarFolderEntry =>
-  entry.order === undefined || !entry.order.includes(key)
-    ? entry
-    : { ...entry, order: entry.order.filter((candidate) => candidate !== key) };
-
-/** Removes the folder, its subfolders, and its place in its parent's saved order. */
-export function removeSidebarFolder(layout: Layout, path: string): Layout {
-  const parsed = parseThreadFolderPath(path);
-  return layout
-    .filter((entry) => renameThreadFolderPath(entry.path, path, path) === null)
-    .map((entry) =>
-      parsed?.sub != null && entry.path === parsed.top
-        ? withoutOrderKey(entry, `/${parsed.sub}`)
-        : entry,
-    );
-}
-
-/** Renames the folder and its subfolders; an entry that would clash with an existing one drops. */
-export function renameSidebarFolder(layout: Layout, from: string, to: string): Layout {
-  const source = parseThreadFolderPath(from);
-  const target = parseThreadFolderPath(to);
-  const existing = new Set(layout.map((entry) => entry.path));
-  const moved = layout.flatMap((entry) => {
-    const renamed = renameThreadFolderPath(entry.path, from, to);
-    if (renamed === null) return [entry];
-    return existing.has(renamed) ? [] : [{ ...entry, path: renamed }];
-  });
-  if (source?.sub == null) return moved;
-  return moved.map((entry) => {
-    if (entry.path !== source.top || entry.order === undefined) return entry;
-    return target?.sub != null && target.top === source.top
-      ? {
-          ...entry,
-          order: entry.order.map((key) => (key === `/${source.sub}` ? `/${target.sub}` : key)),
-        }
-      : withoutOrderKey(entry, `/${source.sub}`);
-  });
-}
-
-/** Saves every drawn top folder in order, with `path` moved before `beforePath` or last. */
-export function moveSidebarTopFolder(
-  layout: Layout,
-  displayedTops: ReadonlyArray<string>,
-  path: string,
-  beforePath: string | null,
-): Layout {
-  const order = displayedTops.filter((top) => top !== path);
-  const index = beforePath === null ? -1 : order.indexOf(beforePath);
-  order.splice(index < 0 ? order.length : index, 0, path);
-  const entryOf = (top: string) => layout.find((entry) => entry.path === top) ?? { path: top };
-  return [...order.map(entryOf), ...layout.filter((entry) => !order.includes(entry.path))];
-}
-
-/** Saves the drawn units of a folder in order, with `unitKey` placed next to `anchorKey`. */
-export function placeSidebarFolderUnit(
-  layout: Layout,
-  folderPath: string,
-  displayedUnitKeys: ReadonlyArray<string>,
-  unitKey: string,
-  anchorKey: string,
-  side: "before" | "after",
-): Layout {
-  const order = displayedUnitKeys.filter((key) => key !== unitKey);
-  const anchor = order.indexOf(anchorKey);
-  order.splice(anchor < 0 ? order.length : anchor + (side === "after" ? 1 : 0), 0, unitKey);
-  return updateEntry(layout, folderPath, (entry) => ({ ...entry, sort: "manual", order }));
-}
-
-export function setSidebarFolderIcon(layout: Layout, path: string, icon: string | null): Layout {
-  return updateEntry(layout, path, ({ icon: _icon, ...entry }) =>
-    icon === null ? entry : { ...entry, icon },
-  );
-}
-
-export function setSidebarFolderSort(
-  layout: Layout,
-  path: string,
-  sort: SidebarFolderSort,
-): Layout {
-  return updateEntry(layout, path, (entry) => ({ ...entry, sort }));
-}
 
 /**
  * A folder heading dropped on another heading: reorder, nest under a top folder, or

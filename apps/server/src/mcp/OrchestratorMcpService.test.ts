@@ -4853,9 +4853,15 @@ describe("OrchestratorMcpService thread list", () => {
   const shells = [
     shell("thread:a-snoozed", "project:a", true),
     shell("thread:a-awake", "project:a", false),
-    shell("thread:b-snoozed", "project:b", true, true, true),
+    {
+      ...shell("thread:b-snoozed", "project:b", true, true, true),
+      // Filed, and started as a sub-session.
+      tags: ["parent:thread:a-awake", "in:Customers/PuL"],
+    },
     {
       ...shell("thread:a-awaiting-command", "project:a", false),
+      // A guest waits on the owner, so the thread needs them.
+      pendingGuestMessageCount: 1,
       activityRunStatus: null,
       pendingBackgroundTasks: [
         { taskId: "sleep-600", kind: "command" as const, awaited: true as const },
@@ -4931,6 +4937,13 @@ describe("OrchestratorMcpService thread list", () => {
         [false, true],
       );
       assert.deepStrictEqual(
+        listed.threads.map((thread) => [thread.folder, thread.subSessionOf, thread.needsYou]),
+        [
+          [undefined, undefined, false],
+          ["Customers/PuL", "thread:a-awake", false],
+        ],
+      );
+      assert.deepStrictEqual(
         listed.threads.map((thread) => [thread.blockedOnThreadWait, thread.pendingBackgroundTasks]),
         [
           [false, []],
@@ -4973,8 +4986,8 @@ describe("OrchestratorMcpService thread list", () => {
         statuses: ["preparing", "queued", "starting", "running", "waiting"],
       });
       assert.deepStrictEqual(
-        listed.threads.map((thread) => thread.threadId),
-        ["thread:a-awaiting-command"],
+        listed.threads.map((thread) => [thread.threadId, thread.needsYou]),
+        [["thread:a-awaiting-command", true]],
       );
     }).pipe(Effect.provide(service)),
   );

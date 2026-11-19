@@ -3,6 +3,13 @@ import * as Schema from "effect/Schema";
 
 import {
   matchKnownThreadFolder,
+  moveSidebarTopFolder,
+  placeSidebarFolderUnit,
+  removeSidebarFolder,
+  renameSidebarFolder,
+  setSidebarFolderIcon,
+  setSidebarFolderSort,
+  upsertSidebarFolder,
   parseThreadFolderPath,
   planThreadFolderTagChanges,
   renameThreadFolderPath,
@@ -111,5 +118,66 @@ describe("matchKnownThreadFolder", () => {
     expect(matchKnownThreadFolder("customers/pul", known)).toBe("Customers/PuL");
     expect(matchKnownThreadFolder("customers/Brummer", known)).toBe("Customers/Brummer");
     expect(matchKnownThreadFolder("Team", known)).toBe("Team");
+  });
+});
+
+describe("layout edits", () => {
+  it("adds, renames and removes folders with their subfolders", () => {
+    const added = upsertSidebarFolder(upsertSidebarFolder([], "Customers/PuL"), "Customers");
+    expect(added).toEqual([{ path: "Customers" }, { path: "Customers/PuL" }]);
+    const renamed = renameSidebarFolder(
+      [
+        { path: "Customers", icon: "users" },
+        { path: "Customers/PuL", sort: "title" },
+      ],
+      "Customers",
+      "Clients",
+    );
+    expect(renamed).toEqual([
+      { path: "Clients", icon: "users" },
+      { path: "Clients/PuL", sort: "title" },
+    ]);
+    expect(removeSidebarFolder(renamed, "Clients")).toEqual([]);
+    expect(
+      removeSidebarFolder(
+        [{ path: "Tasks", sort: "manual", order: ["/Sub", "t1"] }, { path: "Tasks/Sub" }],
+        "Tasks/Sub",
+      ),
+    ).toEqual([{ path: "Tasks", sort: "manual", order: ["t1"] }]);
+  });
+
+  it("sets and clears an icon and a sort, adding the folder when it is not saved yet", () => {
+    const withIcon = setSidebarFolderIcon([], "Team", "users");
+    expect(withIcon).toEqual([{ path: "Team", icon: "users" }]);
+    expect(setSidebarFolderIcon(withIcon, "Team", null)).toEqual([{ path: "Team" }]);
+    expect(setSidebarFolderSort(withIcon, "Team/Daily", "title")).toEqual([
+      { path: "Team", icon: "users" },
+      { path: "Team/Daily", sort: "title" },
+    ]);
+  });
+
+  it("moves a top folder among the drawn ones and saves the whole order", () => {
+    expect(moveSidebarTopFolder([{ path: "B", icon: "star" }], ["B", "A", "C"], "C", "B")).toEqual([
+      { path: "C" },
+      { path: "B", icon: "star" },
+      { path: "A" },
+    ]);
+    expect(moveSidebarTopFolder([], ["A", "B"], "A", null)).toEqual([{ path: "B" }, { path: "A" }]);
+  });
+
+  it("places a unit before or after another and saves the drawn order", () => {
+    expect(
+      placeSidebarFolderUnit(
+        [{ path: "Tasks", sort: "manual" }],
+        "Tasks",
+        ["t1", "/Sub", "t2"],
+        "t2",
+        "t1",
+        "before",
+      ),
+    ).toEqual([{ path: "Tasks", sort: "manual", order: ["t2", "t1", "/Sub"] }]);
+    expect(placeSidebarFolderUnit([], "Tasks", ["t1", "t2"], "t1", "t2", "after")).toEqual([
+      { path: "Tasks", sort: "manual", order: ["t2", "t1"] },
+    ]);
   });
 });

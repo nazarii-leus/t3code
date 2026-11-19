@@ -609,6 +609,121 @@ it.effect("rejects an unknown organize target instead of archiving the calling t
   );
 });
 
+it.effect("files a thread with move, adding the new folder before dropping the old one", () => {
+  const dispatched: Array<{
+    readonly type: string;
+    readonly tag?: string;
+    readonly tagged?: boolean;
+  }> = [];
+  const filed = (id: ThreadId) => ({
+    ...McpToolAccessTestkit.liveThreadShell(id),
+    tags: ["keep", "in:Tasks"],
+  });
+  return Effect.gen(function* () {
+    const server = yield* McpServer.McpServer;
+    const organize = (args: Record<string, unknown>) =>
+      server
+        .callTool({ name: "t3_thread_organize", arguments: args })
+        .pipe(
+          Effect.provideService(McpInvocationContext.McpInvocationContext, scope),
+          Effect.provideService(McpSchema.McpServerClient, client),
+        );
+    const moved = yield* organize({ action: "move", folder: "customers / pul" });
+    expect(moved.isError).toBe(false);
+    expect(dispatched.map(({ type, tag, tagged }) => [type, tag, tagged])).toEqual([
+      ["thread.tag.set", "in:Customers/PuL", true],
+      ["thread.tag.set", "in:Tasks", false],
+    ]);
+    dispatched.length = 0;
+    expect(declaredFailure(yield* organize({ action: "move" }))).toMatchObject({
+      code: "invalid_request",
+    });
+    yield* organize({ action: "unfile" });
+    expect(dispatched.map(({ tag, tagged }) => [tag, tagged])).toEqual([["in:Tasks", false]]);
+  }).pipe(
+    Effect.provide(
+      layerThreadToolkit.pipe(
+        Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+        Layer.provide(NodeCrypto.layer),
+        Layer.provide(ServerSettings.layerTest({ sidebarFolders: [{ path: "Customers/PuL" }] })),
+        Layer.provide(
+          Layer.mock(ThreadManagement.ThreadManagementService)({
+            getThreadShell: (id) => Effect.succeed(filed(id)),
+            getProjectThreadRecords: ({ threadId: id }) =>
+              Effect.succeed(McpToolAccessTestkit.idleThreadProjection(filed(id))),
+            getShellSnapshot: () => Effect.succeed({ threads: [] } as never),
+            dispatch: (command) => {
+              dispatched.push(command as never);
+              return Effect.succeed({ sequence: 1 } as never);
+            },
+          }),
+        ),
+      ),
+    ),
+  );
+});
+
+it.effect("renames a folder for agents by retagging its threads and saving the layout", () => {
+  const dispatched: Array<{
+    readonly threadId: string;
+    readonly tag: string;
+    readonly tagged: boolean;
+  }> = [];
+  const shell = (id: string, tags: ReadonlyArray<string>) => ({
+    ...McpToolAccessTestkit.liveThreadShell(ThreadId.make(id)),
+    tags: [...tags],
+  });
+  return Effect.gen(function* () {
+    const server = yield* McpServer.McpServer;
+    const result = yield* server
+      .callTool({
+        name: "t3_folder",
+        arguments: { action: "rename", path: "customers", to: "Clients" },
+      })
+      .pipe(
+        Effect.provideService(McpInvocationContext.McpInvocationContext, scope),
+        Effect.provideService(McpSchema.McpServerClient, client),
+      );
+    expect(result.isError).toBe(false);
+    expect(dispatched.map(({ threadId, tag, tagged }) => [threadId, tag, tagged])).toEqual([
+      ["pul", "in:Clients/PuL", true],
+      ["pul", "in:Customers/PuL", false],
+      ["general", "in:Clients", true],
+      ["general", "in:Customers", false],
+    ]);
+    expect(result.structuredContent).toMatchObject({
+      folders: expect.arrayContaining([{ path: "Clients", icon: "users", threadCount: 0 }]),
+    });
+  }).pipe(
+    Effect.provide(
+      layerThreadToolkit.pipe(
+        Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+        Layer.provide(NodeCrypto.layer),
+        Layer.provide(
+          ServerSettings.layerTest({ sidebarFolders: [{ path: "Customers", icon: "users" }] }),
+        ),
+        Layer.provide(
+          Layer.mock(ThreadManagement.ThreadManagementService)({
+            getThreadShell: (id) => Effect.succeed(McpToolAccessTestkit.liveThreadShell(id)),
+            getShellSnapshot: () =>
+              Effect.succeed({
+                threads: [
+                  shell("pul", ["in:Customers/PuL"]),
+                  shell("general", ["in:Customers"]),
+                  shell("team", ["in:Team"]),
+                ],
+              } as never),
+            dispatch: (command) => {
+              dispatched.push(command as never);
+              return Effect.succeed({ sequence: 1 } as never);
+            },
+          }),
+        ),
+      ),
+    ),
+  );
+});
+
 it.effect("keeps unexpected handler defects private through the production registration", () =>
   Effect.gen(function* () {
     const server = yield* McpServer.McpServer;

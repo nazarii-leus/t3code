@@ -5,8 +5,14 @@ import {
   type ContextMenuItem,
   type ContextMenuSource,
   matchKnownThreadFolder,
+  moveSidebarTopFolder,
   parseThreadFolderPath,
+  removeSidebarFolder,
+  renameSidebarFolder,
   renameThreadFolderPath,
+  setSidebarFolderIcon,
+  setSidebarFolderSort,
+  upsertSidebarFolder,
   type ScopedThreadRef,
   type SidebarFolderEntry,
   type SidebarFolderSort,
@@ -17,16 +23,7 @@ import { useState } from "react";
 
 import { useStableCallback } from "../../hooks/useStableCallback";
 import { readLocalApi } from "../../localApi";
-import {
-  moveSidebarTopFolder,
-  planSidebarFolderDrop,
-  removeSidebarFolder,
-  renameSidebarFolder,
-  setSidebarFolderIcon,
-  setSidebarFolderSort,
-  type SidebarUserFolder,
-  upsertSidebarFolder,
-} from "../../sidebarUserFolders";
+import { planSidebarFolderDrop, type SidebarUserFolder } from "../../sidebarUserFolders";
 import { buildMoveToFolderMenuItem, type MoveToFolderMenuId } from "../threadActionMenu.logic";
 import { SIDEBAR_FOLDER_ICONS, type SidebarFolderNameEdit } from "./SidebarUserFolderHeader";
 

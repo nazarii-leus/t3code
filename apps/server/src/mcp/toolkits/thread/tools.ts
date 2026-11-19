@@ -20,6 +20,7 @@ import {
   NonNegativeInt,
   ProjectId,
   clampedPositiveInt,
+  SidebarFolderSort,
 } from "@t3tools/contracts";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Schema from "effect/Schema";
@@ -28,11 +29,12 @@ import { Tool, Toolkit } from "effect/ai";
 import * as ThreadSearch from "../../../orchestration-v2/ThreadSearch.ts";
 import * as ScheduledTaskService from "../../../scheduledTasks/ScheduledTaskService.ts";
 import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
+import * as ServerSettings from "../../../serverSettings.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 
 const ThreadOrganizeTool = Tool.make("t3_thread_organize", {
   description:
-    "Pin, snooze, settle, archive, or mark a thread unread. Omit `threadId` for this thread. `snooze` needs `snoozedUntil`. Settling this thread applies at turn end. A failed turn or queued message leaves it active.",
+    "Pin, snooze, settle, archive, mark unread, or file a thread in a sidebar folder. Omit `threadId` for this thread. `snooze` needs `snoozedUntil`; `move` needs `folder` (`Top` or `Top/Sub`); `unfile` puts it back under its project. Settling this thread applies at turn end. A failed turn or queued message leaves it active.",
   parameters: Schema.Struct({
     environmentId: OrchestratorMcpEnvironmentTarget,
     threadId: Schema.optional(ThreadId),
@@ -46,8 +48,11 @@ const ThreadOrganizeTool = Tool.make("t3_thread_organize", {
       "archive",
       "unarchive",
       "mark_unread",
+      "move",
+      "unfile",
     ]),
     snoozedUntil: Schema.optional(IsoDateTime),
+    folder: Schema.optional(Schema.String),
   }),
   success: Schema.Union([
     OrchestrationV2DispatchCommandResult,
@@ -59,6 +64,7 @@ const ThreadOrganizeTool = Tool.make("t3_thread_organize", {
     McpInvocationContext.McpInvocationContext,
     ThreadManagementService.ThreadManagementService,
     SecureRandom.SecureRandom,
+    ServerSettings.ServerSettingsService,
   ],
 })
   .annotate(Tool.Title, "Organize a thread")
@@ -241,7 +247,41 @@ const ScheduledTaskRunTool = Tool.make("run_scheduled_task_now", {
   .annotate(Tool.Destructive, true)
   .annotate(Tool.OpenWorld, true);
 
+const FolderTool = Tool.make("t3_folder", {
+  description:
+    "List, create, rename, reorder or remove sidebar folders. A folder groups threads of any project; `path` is `Top` or `Top/Sub`. `rename` needs `to` and moves every thread in it. `remove` returns its threads to their projects. `reorder` puts a top folder before `before`, or last. Returns the folders after the change.",
+  parameters: Schema.Struct({
+    environmentId: OrchestratorMcpEnvironmentTarget,
+    action: Schema.Literals(["list", "create", "rename", "remove", "reorder", "set_icon"]),
+    path: Schema.optional(Schema.String),
+    to: Schema.optional(Schema.String),
+    before: Schema.optional(Schema.String),
+    icon: Schema.optional(Schema.String),
+  }),
+  success: Schema.Struct({
+    folders: Schema.Array(
+      Schema.Struct({
+        path: Schema.String,
+        icon: Schema.optional(Schema.String),
+        sort: Schema.optional(SidebarFolderSort),
+        threadCount: NonNegativeInt,
+      }),
+    ),
+  }),
+  failure: OrchestratorMcpFailure,
+  failureMode: "return" as const,
+  dependencies: [
+    McpInvocationContext.McpInvocationContext,
+    ThreadManagementService.ThreadManagementService,
+    SecureRandom.SecureRandom,
+    ServerSettings.ServerSettingsService,
+  ],
+})
+  .annotate(Tool.Title, "Manage sidebar folders")
+  .annotate(Tool.Destructive, true);
+
 export const ThreadToolkit = Toolkit.make(
+  FolderTool,
   ScheduledTaskRunTool,
   ThreadSearchTool,
   ThreadConfigureTool,

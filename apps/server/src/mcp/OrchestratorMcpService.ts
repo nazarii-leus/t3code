@@ -61,6 +61,8 @@ import {
   type ServerProvider,
   type ServerProviderModel,
   ThreadId,
+  threadFolderOf,
+  threadParentTagOf,
   isOrchestrationV2WorkActive,
   latestProviderTurnForAttempt,
   resolveProjectProviderInstanceEnabled,
@@ -119,6 +121,7 @@ import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import { knownThreadFolders, threadCreationTags } from "./threadFolders.ts";
 import {
   clientModeCeiling,
   type McpInvocationScope,
@@ -938,6 +941,27 @@ function listedThreadStatus(shell: OrchestrationV2ThreadShell) {
   return threadStatus(shell.activityRunStatus, shell.status, shell.pendingBackgroundTasks);
 }
 
+function folderFields(shell: OrchestrationV2ThreadShell) {
+  const folder = threadFolderOf(shell.tags)?.path;
+  const parent = threadParentTagOf(shell.tags);
+  return {
+    ...(folder === undefined ? {} : { folder }),
+    ...(parent === null ? {} : { subSessionOf: ThreadId.make(parent) }),
+  };
+}
+
+/** Waits for the user, as the sidebar's "needs you" counter counts it. */
+function threadNeedsYou(shell: OrchestrationV2ThreadShell): boolean {
+  return (
+    (shell.pendingRuntimeRequest !== null && shell.pendingRuntimeRequest.kind !== "auth_refresh") ||
+    (shell.hasActionableProposedPlan &&
+      shell.interactionMode === "plan" &&
+      shell.activeRunId === null) ||
+    shell.lastErrorClass === "usage_limit" ||
+    (shell.pendingGuestMessageCount ?? 0) > 0
+  );
+}
+
 function listItemFromShell(
   scope: McpInvocationScope,
   shell: OrchestrationV2ThreadShell,
@@ -964,6 +988,8 @@ function listItemFromShell(
     ...threadBackgroundWork(shell),
     parentThreadId: shell.lineage.parentThreadId,
     relationshipToParent: shell.lineage.relationshipToParent,
+    ...folderFields(shell),
+    needsYou: threadNeedsYou(shell),
     ...(shell.delegatedFrom == null ? {} : { delegatedFrom: shell.delegatedFrom }),
     itemCount: shell.visibleItemCount,
     createdAt: DateTime.formatIso(shell.createdAt),
@@ -3062,6 +3088,20 @@ const make = Effect.gen(function* () {
         const parentNodeId = parentRun.rootNodeId;
         const providers = yield* loadProviders;
         const key = yield* requestKey(input.clientRequestId);
+        const knownFolders = input.threads.some(
+          (request) => request.folder !== undefined || request.parent !== undefined,
+        )
+          ? knownThreadFolders(
+              (yield* threadManagement
+                .getShellSnapshot()
+                .pipe(Effect.mapError(threadManagementFailure))).threads,
+              (yield* serverSettings.getSettings.pipe(
+                Effect.mapError(() =>
+                  failure("orchestration_error", "Unable to read server settings."),
+                ),
+              )).sidebarFolders,
+            )
+          : [];
         const created = yield* Effect.forEach(
           input.threads,
           (request, index) =>
@@ -3111,6 +3151,12 @@ const make = Effect.gen(function* () {
                 title: request.title,
                 index,
               });
+              const tags = yield* threadCreationTags({
+                folder: request.folder,
+                parent: request.parent,
+                caller: parent.thread,
+                known: knownFolders,
+              });
               const initialMessage =
                 request.prompt === undefined
                   ? undefined
@@ -3141,6 +3187,7 @@ const make = Effect.gen(function* () {
                   ...(parent.thread.linkOrigin === undefined
                     ? {}
                     : { linkOrigin: parent.thread.linkOrigin }),
+                  ...(tags.length === 0 ? {} : { tags }),
                   ...(initialMessage === undefined ? {} : { initialMessage }),
                 })
                 .pipe(

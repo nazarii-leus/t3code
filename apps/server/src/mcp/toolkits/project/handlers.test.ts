@@ -11,6 +11,7 @@ import {
   type ModelSelection,
   type RuntimeMode,
   type OrchestrationV2ThreadShell,
+  type OrchestrationV2ThreadShellSnapshot,
   ThreadId,
 } from "@t3tools/contracts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
@@ -62,6 +63,7 @@ const clientLaunchHarness = (input: {
   readonly hostedAppUrl?: string;
   /** The orchestrator refuses the new thread's mode, as under a managed ceiling. */
   readonly refusedByCeiling?: true;
+  readonly sidebarFolders?: ReadonlyArray<{ readonly path: string }>;
 }) => {
   const projectId = ProjectId.make("project:client-target");
   const modelSelection = {
@@ -78,6 +80,7 @@ const clientLaunchHarness = (input: {
     }),
     ServerSettings.layerTest({
       fallbackModelSelection: input.fallbackModel ?? null,
+      ...(input.sidebarFolders === undefined ? {} : { sidebarFolders: [...input.sidebarFolders] }),
       ...(input.defaultRuntimeMode === undefined
         ? {}
         : { defaultRuntimeMode: input.defaultRuntimeMode }),
@@ -110,6 +113,8 @@ const clientLaunchHarness = (input: {
       capabilities: new Set(["orchestration" as const]),
     }),
     Layer.mock(ThreadManagement.ThreadManagementService)({
+      getShellSnapshot: () =>
+        Effect.succeed({ threads: [] } as unknown as OrchestrationV2ThreadShellSnapshot),
       // A thread exists once a launch started it.
       getThreadShell: (threadId) => {
         const launch = input.launched.find((candidate) => candidate.threadId === threadId);
@@ -417,6 +422,37 @@ it.effect("a launch with a model its provider does not advertise creates no thre
       modelSelection: { instanceId: "claudeAgent", model: "Opus" },
     });
     expect(launched).toHaveLength(1);
+  }),
+);
+
+it.effect("a launch files its thread in a folder, in the folder's existing spelling", () =>
+  Effect.gen(function* () {
+    const launched: Array<ThreadLaunch.ThreadLaunchInput> = [];
+    const { projectId, dependencies } = clientLaunchHarness({
+      runtimeModeCeiling: "auto",
+      launched,
+      sidebarFolders: [{ path: "Customers/PuL" }],
+    });
+    const toolkit = yield* ProjectToolkit.pipe(
+      Effect.provide(
+        McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer).pipe(Layer.provide(dependencies)),
+      ),
+    );
+    const launch = (options: { readonly folder?: string; readonly parent?: "self" }) =>
+      toolkit.handle("t3_thread_launch", { title: "Fix", projectId, ...options }).pipe(
+        Stream.unwrap,
+        Stream.runCollect,
+        Effect.map((result) => result.at(-1)?.result),
+        Effect.provide(dependencies),
+      );
+
+    yield* launch({ folder: "customers / pul" });
+    yield* launch({});
+    expect(launched.map((input) => input.tags)).toEqual([["in:Customers/PuL"], undefined]);
+    // An outside client has no thread to nest the new one under.
+    expect(yield* launch({ parent: "self" })).toMatchObject({ code: "invalid_request" });
+    expect(yield* launch({ folder: "A/B/C" })).toMatchObject({ code: "invalid_request" });
+    expect(launched).toHaveLength(2);
   }),
 );
 

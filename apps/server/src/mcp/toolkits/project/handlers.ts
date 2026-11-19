@@ -38,6 +38,7 @@ import * as McpToolAccess from "../../McpToolAccess.ts";
 import * as OrchestrationMcp from "../../OrchestratorMcpService.ts";
 import { newCommandId, readCaller, resolveProjectId, unavailable } from "../../threadAccess.ts";
 import { ProjectToolkit } from "./tools.ts";
+import { readThreadFolders, threadCreationTags } from "../../threadFolders.ts";
 
 const isAboveCeilingError = Schema.is(OrchestratorRuntimeModeAboveCeilingError);
 
@@ -341,11 +342,21 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
             )?.supportedRuntimeModes,
           });
         }
+        const tags =
+          input.folder === undefined && input.parent === undefined
+            ? []
+            : yield* threadCreationTags({
+                folder: input.folder,
+                parent: input.parent,
+                caller,
+                known: (yield* readThreadFolders(context.threads)).known,
+              });
         const result = yield* ThreadMessageIntake.launchThread({
           commandId,
           threadId,
           projectId,
           title: input.title,
+          ...(tags.length === 0 ? {} : { tags }),
           modelSelection,
           runtimeMode: startedRuntimeMode,
           interactionMode,

@@ -3,9 +3,19 @@ import {
   type RuntimeRequestId,
   ThreadId,
   type OrchestrationV2ThreadProjection,
+  type OrchestrationV2ThreadShell,
   type RunId,
   OrchestratorMcpFailure,
   type OrchestrationV2Command,
+  moveSidebarTopFolder,
+  parseThreadFolderPath,
+  removeSidebarFolder,
+  renameSidebarFolder,
+  renameThreadFolderPath,
+  setSidebarFolderIcon,
+  type SidebarFolderEntry,
+  threadFolderOf,
+  upsertSidebarFolder,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import { modelSelectionCommandType } from "@t3tools/shared/model";
@@ -20,11 +30,18 @@ import {
   readThread,
   unavailable,
 } from "../../threadAccess.ts";
-import type * as ThreadManagement from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as ThreadSearch from "../../../orchestration-v2/ThreadSearch.ts";
 import * as ScheduledTasks from "../../../scheduledTasks/ScheduledTaskService.ts";
 import { queuedRunsInDeliveryOrder } from "../../../orchestration-v2/QueuedRunOrder.ts";
 import { ThreadToolkit } from "./tools.ts";
+import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
+import * as ServerSettings from "../../../serverSettings.ts";
+import {
+  knownThreadFolders,
+  readThreadFolders,
+  resolveThreadFolder,
+  setThreadFolder,
+} from "../../threadFolders.ts";
 
 function queueEntry(
   projection: Pick<OrchestrationV2ThreadProjection, "runs" | "messages">,
@@ -58,7 +75,7 @@ const dispatch = Effect.fn("mcp.dispatchThreadCommand")(function* (
  * best effort: if the index cannot be read, the pin still lands, keyless.
  */
 const topOfPinnedRunKey = Effect.fn("mcp.topOfPinnedRunKey")(function* (
-  threads: Pick<ThreadManagement.ThreadManagementService["Service"], "listActiveShellIndex">,
+  threads: Pick<ThreadManagementService.ThreadManagementService["Service"], "listActiveShellIndex">,
 ) {
   const index = yield* threads.listActiveShellIndex().pipe(Effect.orElseSucceed(() => null));
   if (index === null) return undefined;
@@ -102,6 +119,37 @@ const required = <A>(value: A | undefined, name: string) =>
         }),
       )
     : Effect.succeed(value);
+/** Top folders in saved order, then the rest by name; each followed by its subfolders. */
+function listThreadFolders(
+  layout: ReadonlyArray<SidebarFolderEntry>,
+  shells: ReadonlyArray<Pick<OrchestrationV2ThreadShell, "tags">>,
+) {
+  const known = knownThreadFolders(shells, layout);
+  const byName = (left: string, right: string) =>
+    left.localeCompare(right, undefined, { numeric: true, sensitivity: "base" });
+  const ordered = (paths: ReadonlyArray<string>) => {
+    const saved = layout.map((entry) => entry.path).filter((path) => paths.includes(path));
+    return [...new Set(saved), ...paths.filter((path) => !saved.includes(path)).toSorted(byName)];
+  };
+  const tops = ordered([...new Set(known.map((path) => path.split("/")[0]!))]);
+  const folderOf = (shell: Pick<OrchestrationV2ThreadShell, "tags">) =>
+    threadFolderOf(shell.tags)?.path;
+  return tops
+    .flatMap((top) => [top, ...ordered(known.filter((path) => path.startsWith(`${top}/`)))])
+    .map((path) => {
+      const entry = layout.find((candidate) => candidate.path === path);
+      return {
+        path,
+        ...(entry?.icon === undefined ? {} : { icon: entry.icon }),
+        ...(entry?.sort === undefined ? {} : { sort: entry.sort }),
+        threadCount: shells.filter((shell) => {
+          const folder = folderOf(shell);
+          return folder !== undefined && renameThreadFolderPath(folder, path, path) !== null;
+        }).length,
+      };
+    });
+}
+
 const writesThread = <P extends { readonly threadId?: ThreadId | undefined }, A, E, R>(
   handle: (params: P) => Effect.Effect<A, E, R>,
 ) => McpToolAccess.writesThreads((params: P) => [params.threadId], handle);
@@ -362,6 +410,16 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
   t3_thread_organize: writesThread((input) =>
     Effect.gen(function* () {
       const { threads, projection, caller } = yield* readThread(input.threadId);
+      if (input.action === "move" || input.action === "unfile") {
+        const folder =
+          input.action === "unfile"
+            ? null
+            : yield* resolveThreadFolder(
+                yield* required(input.folder, "folder"),
+                (yield* readThreadFolders(threads)).known,
+              );
+        return yield* setThreadFolder(threads, projection.thread, folder);
+      }
       const common = { commandId: yield* newCommandId(), threadId: projection.thread.id };
       if (input.action === "settle") {
         return yield* threads
@@ -399,6 +457,89 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
       }
       const result = yield* threads.dispatch(command).pipe(Effect.mapError(dispatchFailure));
       return { sequence: result.sequence };
+    }),
+  ),
+  t3_folder: McpToolAccess.writes((input) =>
+    Effect.gen(function* () {
+      const threads = yield* ThreadManagementService.ThreadManagementService;
+      const settings = yield* ServerSettings.ServerSettingsService;
+      const { layout, shells, known } = yield* readThreadFolders(threads);
+      const path = () =>
+        required(input.path, "path").pipe(
+          Effect.flatMap((value) => resolveThreadFolder(value, known)),
+        );
+      const existing = () =>
+        path().pipe(
+          Effect.filterOrFail(
+            (value) => known.includes(value),
+            (value) =>
+              new OrchestratorMcpFailure({
+                code: "invalid_request",
+                message: `There is no folder "${value}".`,
+              }),
+          ),
+        );
+      // Retags every thread under `from`; null takes them out of their folder.
+      const retag = (from: string, to: (folder: string) => string | null) =>
+        Effect.forEach(
+          shells.filter((shell) => {
+            const folder = threadFolderOf(shell.tags)?.path;
+            return folder !== undefined && renameThreadFolderPath(folder, from, from) !== null;
+          }),
+          (shell) => setThreadFolder(threads, shell, to(threadFolderOf(shell.tags)!.path)),
+          { discard: true },
+        );
+      let next: ReadonlyArray<SidebarFolderEntry> | null = null;
+      switch (input.action) {
+        case "list":
+          break;
+        case "create":
+          next = upsertSidebarFolder(layout, yield* path());
+          break;
+        case "rename": {
+          const from = yield* existing();
+          const target = parseThreadFolderPath(yield* required(input.to, "to"));
+          if (target === null || known.includes(target.path)) {
+            return yield* new OrchestratorMcpFailure({
+              code: "invalid_request",
+              message: "`to` must be a new folder, `Top` or `Top/Sub`.",
+            });
+          }
+          yield* retag(from, (folder) => renameThreadFolderPath(folder, from, target.path));
+          next = renameSidebarFolder(upsertSidebarFolder(layout, from), from, target.path);
+          break;
+        }
+        case "remove": {
+          const target = yield* existing();
+          yield* retag(target, () => null);
+          next = removeSidebarFolder(layout, target);
+          break;
+        }
+        case "reorder": {
+          const target = yield* existing();
+          const tops = listThreadFolders(layout, shells)
+            .map((folder) => folder.path)
+            .filter((candidate) => !candidate.includes("/"));
+          const before =
+            input.before === undefined ? null : yield* resolveThreadFolder(input.before, known);
+          next = moveSidebarTopFolder(layout, tops, target, before);
+          break;
+        }
+        case "set_icon":
+          next = setSidebarFolderIcon(layout, yield* existing(), input.icon ?? null);
+          break;
+      }
+      const saved =
+        next === null
+          ? layout
+          : (yield* settings
+              .updateSettings({ sidebarFolders: next })
+              .pipe(Effect.mapError(unavailable))).sidebarFolders;
+      const after =
+        input.action === "rename" || input.action === "remove"
+          ? (yield* threads.getShellSnapshot().pipe(Effect.mapError(unavailable))).threads
+          : shells;
+      return { folders: listThreadFolders(saved, after) };
     }),
   ),
 });

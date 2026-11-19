@@ -5,6 +5,7 @@ import { attachSidebarTree } from "../lib/sidebarTree";
 import {
   type EnvironmentId,
   type ScopedProjectRef,
+  placeSidebarFolderUnit,
   type SidebarFolderEntry,
   threadFolderOf,
   threadFolderTag,
@@ -291,7 +292,6 @@ import {
   buildSidebarUserFolders,
   countSidebarThreadsByClass,
   flattenSidebarUserFolders,
-  placeSidebarFolderUnit,
   sidebarSessionRows,
   sidebarUserFolderExpansionKey,
   resolveAdjacentAttentionKey,
