@@ -16,6 +16,8 @@ import {
   type ScopedThreadRef,
   ThreadId,
   sessionGrantsScope,
+  planThreadFolderTagChanges,
+  threadFolderOf,
 } from "@t3tools/contracts";
 import { resolveWorktreeCleanup } from "@t3tools/shared/projectSettings";
 import * as Cause from "effect/Cause";
@@ -326,6 +328,9 @@ export function useThreadActions() {
     reportFailure: false,
   });
   const reorderPinnedThreadMutation = useOrchestrationCommand(threadEnvironment.reorderPin, {
+    reportFailure: false,
+  });
+  const setThreadFolderMutation = useOrchestrationCommand(threadEnvironment.setFolder, {
     reportFailure: false,
   });
   const reorderActiveThreadMutation = useOrchestrationCommand(threadEnvironment.reorderActive, {
@@ -879,6 +884,37 @@ export function useThreadActions() {
     return result;
   };
 
+  /** Files the thread in `folder` (`Top` or `Top/Sub`), or back under its project for null. */
+  const moveThreadToFolder = async (target: ScopedThreadRef, folder: string | null) => {
+    const permissionFailure = threadOperationFailure(target);
+    if (permissionFailure) return permissionFailure;
+    const currentTags = readThreadShell(target)?.source.tags ?? [];
+    if (planThreadFolderTagChanges(currentTags, folder).length === 0) return null;
+    const previous = threadFolderOf(currentTags)?.path ?? null;
+    const action = ThreadUndo.begin("folder", scopedThreadKey(target));
+    const setFolder = (next: string | null) =>
+      setThreadFolderMutation({
+        environmentId: target.environmentId,
+        input: {
+          threadId: target.threadId,
+          folder: next,
+          currentTags: readThreadShell(target)?.source.tags ?? [],
+        },
+      });
+    const result = await setFolder(folder);
+    if (result._tag !== "Success") {
+      action.finish();
+      return result;
+    }
+    showThreadUndoNotice({
+      action: "Moved",
+      claim: action,
+      undo: () => setFolder(previous),
+      failureTitle: m(msg("Failed to undo move")),
+    });
+    return result;
+  };
+
   const confirmAndUnpinThread = async (target: ScopedThreadRef) => {
     const permissionFailure = threadOperationFailure(target);
     if (permissionFailure) return permissionFailure;
@@ -1059,6 +1095,7 @@ export function useThreadActions() {
     confirmAndUnpinThread,
     reorderPinnedThread,
     reorderActiveThread,
+    moveThreadToFolder,
     markThreadUnread,
     setThreadAutoSettle,
     turnThreadIntoProject: (target: ScopedThreadRef) =>

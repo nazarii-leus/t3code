@@ -1,4 +1,9 @@
-import { CommandId, type ModelSelection, type ThreadId } from "@t3tools/contracts";
+import {
+  CommandId,
+  type ModelSelection,
+  type ThreadId,
+  withThreadFolderTag,
+} from "@t3tools/contracts";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -50,6 +55,7 @@ import {
   pinThread,
   reorderPinnedThread,
   reorderActiveThread,
+  setThreadFolder,
   setThreadAutoSettle,
   settleThread,
   snoozeThread,
@@ -249,6 +255,12 @@ export function createThreadEnvironmentAtoms<R, E>(
     reorderActive: createEnvironmentCommand(runtime, {
       label: "environment-data:commands:thread:reorder-active",
       execute: reorderActiveThread,
+      scheduler,
+      concurrency,
+    }),
+    setFolder: createEnvironmentCommand(runtime, {
+      label: "environment-data:commands:thread:set-folder",
+      execute: setThreadFolder,
       scheduler,
       concurrency,
     }),
@@ -564,6 +576,10 @@ export function createThreadEnvironmentAtoms<R, E>(
     reorderActive: optimistic.wrap(commands.reorderActive, (thread, input) => ({
       ...thread,
       activeOrderKey: input.orderKey,
+    })),
+    setFolder: optimistic.wrap(commands.setFolder, (thread, input) => ({
+      ...thread,
+      tags: withThreadFolderTag(thread.tags ?? [], input.folder),
     })),
     // Shown at once, so a composer that releases its accepted pick keeps showing it.
     setModelSelection: optimistic.wrap(commands.setModelSelection, (thread, input) => ({

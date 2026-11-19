@@ -9,6 +9,7 @@ import {
   threadFolderOf,
   threadParentTag,
   threadParentTagOf,
+  withThreadFolderTag,
 } from "./threadFolders.ts";
 import { ThreadTag } from "./threadTags.ts";
 
@@ -69,6 +70,22 @@ describe("planThreadFolderTagChanges", () => {
     expect(planThreadFolderTagChanges(["in:Tasks", "in:Team"], "Tasks")).toEqual([
       { tag: "in:Team", tagged: false },
     ]);
+  });
+
+  it("ends with the same tags as the optimistic update", () => {
+    for (const [tags, path] of [
+      [["keep", "in:Tasks", "in:"], "Customers/PuL"],
+      [["in:Tasks", "in:Team"], "Tasks"],
+      [["in:Tasks", "keep"], null],
+    ] as const) {
+      let applied: string[] = [...tags];
+      for (const change of planThreadFolderTagChanges(tags, path)) {
+        applied = change.tagged
+          ? [...applied, change.tag]
+          : applied.filter((tag) => tag !== change.tag);
+      }
+      expect(applied).toEqual(withThreadFolderTag(tags, path));
+    }
   });
 
   it("unfiles by removing every folder tag", () => {

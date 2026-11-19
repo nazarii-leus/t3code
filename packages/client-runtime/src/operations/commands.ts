@@ -29,6 +29,7 @@ import {
   type ThreadEnvMode,
   type UploadChatAttachment,
   type GuestMessageId,
+  planThreadFolderTagChanges,
 } from "@t3tools/contracts";
 import { derivePendingBackgroundWork } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import { visibleThreadPullRequests } from "@t3tools/shared/threadPullRequests";
@@ -620,6 +621,28 @@ export const reorderActiveThread = Effect.fn("EnvironmentCommands.reorderActiveT
     threadId: input.threadId,
     orderKey: input.orderKey,
   });
+});
+
+export interface SetThreadFolderInput extends ThreadCommandInput {
+  /** `Top` or `Top/Sub`; null takes the thread out of every folder. */
+  readonly folder: string | null;
+  readonly currentTags: ReadonlyArray<string>;
+}
+
+/** Adds the new folder tag before removing the old ones, so the thread is never shown unfiled. */
+export const setThreadFolder = Effect.fn("EnvironmentCommands.setThreadFolder")(function* (
+  input: SetThreadFolderInput,
+) {
+  let last: { readonly sequence: number } | null = null;
+  for (const change of planThreadFolderTagChanges(input.currentTags, input.folder)) {
+    last = yield* dispatch({
+      type: "thread.tag.set",
+      commandId: yield* allocateCommandId({}),
+      threadId: input.threadId,
+      ...change,
+    });
+  }
+  return last ?? { sequence: 0 };
 });
 
 export const unpinThread = Effect.fn("EnvironmentCommands.unpinThread")(function* (

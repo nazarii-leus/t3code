@@ -66,6 +66,14 @@ export function planThreadFolderTagChanges(
   ];
 }
 
+/** The tags after a move: the same as applying `planThreadFolderTagChanges` in order. */
+export function withThreadFolderTag(tags: ReadonlyArray<string>, path: string | null): string[] {
+  return [
+    ...tags.filter((tag) => !tag.startsWith(THREAD_FOLDER_TAG_PREFIX)),
+    ...(path === null ? [] : [threadFolderTag(path)]),
+  ];
+}
+
 /** `from` itself or anything under it, moved to `to`; null when `path` is not under `from`. */
 export function renameThreadFolderPath(path: string, from: string, to: string): string | null {
   if (path === from) return to;
