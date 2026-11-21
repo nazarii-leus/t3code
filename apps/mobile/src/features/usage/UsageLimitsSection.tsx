@@ -169,6 +169,22 @@ function AccountInstanceLabel({ value }: { readonly value: string }) {
   );
 }
 
+/** One provider's windows as bars, without the account header. */
+export function LimitWindowBars(props: {
+  readonly driver: Driver;
+  readonly windows: ReadonlyArray<ServerProviderUsageWindow>;
+  readonly now: number;
+}) {
+  const color = useBarColor(props.driver);
+  return (
+    <View className="gap-3">
+      {props.windows.map((window) => (
+        <WindowRow key={window.id} window={window} color={color} now={props.now} />
+      ))}
+    </View>
+  );
+}
+
 export function AccountLimits(props: {
   readonly driver: Driver;
   readonly accentColor?: string | undefined;

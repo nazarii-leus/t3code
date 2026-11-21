@@ -98,6 +98,7 @@ import { SettingsAppearanceRouteScreen } from "./features/settings/SettingsAppea
 import { SettingsClientStorageRouteScreen } from "./features/settings/SettingsClientStorageRouteScreen";
 import { SettingsDiagnosticsRouteScreen } from "./features/diagnostics/SettingsDiagnosticsRouteScreen";
 import { SettingsProviderAccountsRouteScreen } from "./features/settings/SettingsProviderAccountsRouteScreen";
+import { SettingsClaudeAccountsRouteScreen } from "./features/settings/SettingsClaudeAccountsRouteScreen";
 import { SettingsAuthRouteScreen } from "./features/settings/SettingsAuthRouteScreen";
 import { SettingsEnvironmentDetailRouteScreen } from "./features/settings/SettingsEnvironmentDetailRouteScreen";
 import {
@@ -173,6 +174,7 @@ const ROUTE_TITLES: Readonly<Record<string, string>> = {
   SettingsWorktrees: msg("Worktrees"),
   SettingsLabs: msg("Labs"),
   SettingsProviderAccounts: msg("Providers"),
+  SettingsClaudeAccounts: msg("Claude"),
   SettingsEnvironmentMaintenance: msg("Maintenance"),
   SettingsNotifications: msg("Notifications"),
   SettingsThreads: msg("Threads"),
@@ -280,6 +282,11 @@ const SETTINGS_SCREENS = {
   SettingsProviderAccounts: createNativeStackScreen({
     screen: SettingsProviderAccountsRouteScreen,
     linking: "settings/provider-accounts",
+    options: settingsPage(),
+  }),
+  SettingsClaudeAccounts: createNativeStackScreen({
+    screen: SettingsClaudeAccountsRouteScreen,
+    linking: "settings/provider-accounts/claude/:environmentId/:instanceId",
     options: settingsPage(),
   }),
   SettingsEnvironmentMaintenance: createNativeStackScreen({

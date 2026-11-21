@@ -13,6 +13,7 @@ import {
   type ServerProvider,
 } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
+import { useNavigation } from "@react-navigation/native";
 import { useRef, useState, type ReactNode } from "react";
 import { Linking, Pressable, ScrollView, TextInput, useWindowDimensions, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -34,8 +35,7 @@ import { ListActionRow as SettingsActionRow } from "../../components/ui/ListActi
 import { useSettingsEnvironmentMenu } from "./components/SettingsEnvironmentFilterHeader";
 import { SettingsScreen } from "./components/SettingsScreen";
 import { SettingsSection } from "./components/SettingsSection";
-import { AddClaudeAccount, ClaudeAccount, useClaudeAccountMenu } from "./ClaudeAccounts";
-import { CLAUDE_DRIVER } from "./claude-accounts";
+import { NavigationRow } from "../../components/ui/NavigationRow";
 import { useSettingsEnvironmentFilter, type SettingsTarget } from "./settings-environment-filter";
 
 export function SettingsProviderAccountsRouteScreen() {
@@ -93,25 +93,38 @@ function EnvironmentProviders({
   readonly environment: SettingsTarget;
   readonly providers: ReadonlyArray<ServerProvider>;
 }) {
+  const gt = useGT();
+  const navigation = useNavigation();
   const accounts = providers.filter(canManageProvider);
-  // Claude signs in from here except on Windows servers, where each account is a signed-in config folder.
-  const claudeAccounts = providers.filter(
-    (provider) => provider.driver === CLAUDE_DRIVER && !canManageProvider(provider),
-  );
-  const canAddClaude = isManagedDriverAllowed(
-    environment.serverConfig.managedPolicy,
-    CLAUDE_DRIVER,
-  );
   return (
     <>
       {accounts.map((provider, index) =>
-        provider.driver === CLAUDE_DRIVER ? (
-          <ClaudeProviderAccount
+        provider.accounts ? (
+          // Claude keeps a list of accounts in one folder; its own screen manages them.
+          <View
             key={provider.instanceId}
-            environment={environment}
-            provider={provider}
-            divider={index > 0}
-          />
+            className={index > 0 ? "border-t border-border-subtle" : undefined}
+          >
+            <NavigationRow
+              title={provider.displayName ?? "Claude"}
+              subtitle={[
+                gt("{count, plural, one {# account} other {# accounts}}", {
+                  count: provider.accounts.accounts.filter(
+                    (account) => account.state !== "signed-out",
+                  ).length,
+                }),
+                provider.accounts.accounts.find((account) => account.active)?.name,
+              ]
+                .filter(Boolean)
+                .join(" · ")}
+              onPress={() =>
+                navigation.navigate("SettingsClaudeAccounts", {
+                  environmentId: environment.environmentId,
+                  instanceId: provider.instanceId,
+                })
+              }
+            />
+          </View>
         ) : (
           <ProviderAccount
             key={provider.instanceId}
@@ -125,17 +138,6 @@ function EnvironmentProviders({
         <Text className="p-4 text-foreground-muted">
           <T>Configure a provider with in-app sign-in in web or desktop Settings.</T>
         </Text>
-      ) : null}
-      {claudeAccounts.map((provider) => (
-        <ClaudeAccount key={provider.instanceId} environment={environment} provider={provider} />
-      ))}
-      {canAddClaude ? (
-        <AddClaudeAccount
-          environment={environment}
-          sharedAccount={providers.some(
-            (provider) => provider.driver === CLAUDE_DRIVER && canManageProvider(provider),
-          )}
-        />
       ) : null}
     </>
   );
@@ -154,23 +156,6 @@ function managedProviders(
 function canManageProvider(provider: ServerProvider) {
   return Boolean(
     provider.setup?.canAuthenticate || (provider.driver === "acpRegistry" && provider.installed),
-  );
-}
-
-function ClaudeProviderAccount(props: {
-  readonly environment: SettingsTarget;
-  readonly provider: ServerProvider;
-  readonly divider: boolean;
-}) {
-  const menu = useClaudeAccountMenu(props.environment, props.provider);
-  return (
-    <ProviderAccount
-      {...props}
-      extraActions={menu.editing ? [] : menu.actions}
-      onExtraAction={menu.onAction}
-    >
-      {menu.panel}
-    </ProviderAccount>
   );
 }
 

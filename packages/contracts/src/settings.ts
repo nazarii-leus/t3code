@@ -1642,6 +1642,12 @@ export const isUnconfiguredDefaultInstanceEnabled = (instanceId: ProviderInstanc
 const defaultEnabledForDriver = (driver: ProviderDriverKind): boolean =>
   !DEFAULT_DISABLED_PROVIDER_DRIVERS.has(driver);
 
+/** The instance that now serves a retired instance id's threads, or the id itself. */
+export const resolveProviderInstanceAlias = (
+  settings: Pick<ServerSettings, "providerInstanceAliases"> | null | undefined,
+  instanceId: ProviderInstanceId,
+): ProviderInstanceId => settings?.providerInstanceAliases?.[instanceId] ?? instanceId;
+
 export const resolveProviderInstanceEnabled = (
   instance: Pick<ProviderInstanceConfig, "driver" | "enabled" | "config">,
 ): boolean => {

@@ -81,6 +81,7 @@ import {
   type ModelSelection,
   type PreviewAnnotationPayload,
   PROVIDER_DISPLAY_NAMES,
+  resolveProviderInstanceAlias,
   ProviderInstanceId,
   type ServerProvider,
   type ScopedThreadRef,
@@ -2621,26 +2622,38 @@ export default function ChatView(props: ChatViewProps) {
   const accountSelection = composerSelectedModelSelection ?? activeThread?.modelSelection ?? null;
   const accountProvider = providerStatuses.find(
     (provider) =>
-      provider.instanceId === accountSelection?.instanceId && provider.accounts?.supported,
+      accountSelection !== null &&
+      provider.instanceId === resolveProviderInstanceAlias(settings, accountSelection.instanceId) &&
+      provider.accounts?.supported,
   );
   const accountSwitch = useAccountSwitch();
   const openComposerModelPicker = useStableCallback(() => composerRef.current?.openModelPicker());
   const [dismissedAccountModel, setDismissedAccountModel] = useState<string | null>(null);
   const limitedProvider = providerStatuses.find(
-    (provider) => provider.instanceId === activeThread?.modelSelection.instanceId,
+    (provider) =>
+      activeThread !== undefined &&
+      activeThread !== null &&
+      provider.instanceId ===
+        resolveProviderInstanceAlias(settings, activeThread.modelSelection.instanceId),
   );
+  const limitedAccounts = limitedProvider?.accounts?.supported
+    ? limitedProvider.accounts
+    : undefined;
   const noSwitchProvider =
     settings.switchAccountsAtUsageLimits &&
     limitRecoveryRun !== null &&
     activeThread &&
     limitedProvider &&
-    resolveLimitSwitchSelection({
-      selection: activeThread.modelSelection,
-      providers: providerStatuses,
-      settings,
-      projectId: activeThread.projectId,
-      now: Date.parse(`${nowMinute}:00Z`),
-    }) === null
+    // Claude switches its own account in place; other providers switch to another instance.
+    (limitedAccounts
+      ? limitedAccounts.autoSwitch.targetId === null
+      : resolveLimitSwitchSelection({
+          selection: activeThread.modelSelection,
+          providers: providerStatuses,
+          settings,
+          projectId: activeThread.projectId,
+          now: Date.parse(`${nowMinute}:00Z`),
+        }) === null)
       ? (PROVIDER_DISPLAY_NAMES[limitedProvider.driver] ?? limitedProvider.driver)
       : undefined;
   const limitRecoveryBanner =

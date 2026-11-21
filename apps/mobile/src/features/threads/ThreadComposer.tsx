@@ -12,6 +12,7 @@ import {
   AuthOrchestrationOperateScope,
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
   PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
+  resolveProviderInstanceAlias,
   type ChatAttachment,
   type EnvironmentId,
   type MessageId,
@@ -347,7 +348,12 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
     if (!props.serverConfig) return null;
     return (
       props.serverConfig.providers.find(
-        (p) => p.instanceId === props.selectedThread.modelSelection.instanceId,
+        (p) =>
+          p.instanceId ===
+          resolveProviderInstanceAlias(
+            props.serverConfig?.settings,
+            props.selectedThread.modelSelection.instanceId,
+          ),
       ) ?? null
     );
   })();
