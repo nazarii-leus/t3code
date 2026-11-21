@@ -4,49 +4,80 @@ T3 Code uses Claude Code's login and configuration. Start with the default provi
 for one account; [provider setup](./install.md#providers) covers installation and
 shared provider settings.
 
-## Separate accounts or configurations
+## Accounts
 
-To add another Claude account, open **Settings > Providers**, add a provider, select
-Claude and choose **Add Claude account**. Enter the account's email, continue, and sign
-in on Claude's page. The new account shares your rules, settings, skills, plugins, MCP
-servers and conversations with your main Claude account; only its login is separate, so
-existing threads continue on it with their history. Its own files stay in a folder under
-`~/.claude-accounts` on the environment's machine. On mobile, tap **Add Claude account**
-in **Settings > Providers**.
+One Claude folder (`~/.claude`, or the provider's **Claude folder**) can hold several Claude
+accounts. Open **Settings > Providers > Claude**. **Accounts** lists them; one is active at a
+time, and it runs every Claude thread and Claude in terminals on that machine. Everything else in
+the folder is shared by all accounts: rules, settings, skills, plugins, MCP servers and their
+sign-ins, and conversations, so a thread continues with its history after a switch.
 
-An account that is signed out shows **Sign in** in **Settings > Providers**. The browser
-signs in to the Claude account it is already using, so to sign in a different one, copy
-the sign-in link and open it in a private window. When T3 Code runs on another machine,
-the browser cannot reach the final localhost page; paste that page's address into the
-sign-in panel. With **Account email** set, the provider shows a warning when a different
-account is signed in. On Windows, sign in with `claude auth login` as described below.
+- **Add account** signs in on Claude's page. The page signs in the account your browser is using,
+  so open the link in a private window to add a different one. When T3 Code runs on another
+  machine, the browser cannot reach the final localhost page; paste that page's address into the
+  sign-in panel. A new account does not become active until you choose **Use**.
+- **Use** makes an account active. When Claude threads are working, a confirmation names them:
+  each finishes its current step, then continues on the new account. It also says when the account
+  can't run a model in use or is out of usage.
+- Each row shows the account's plan, its status and its usage windows: the 5-hour window, the
+  weekly window and each model's weekly window, such as Fable. **Check usage** reads them again.
+- A sign-in lasts about 30 days. The row warns five days before it ends; **Sign in again** renews it.
+- The menu also offers **Rename**, **Leave out of automatic switching**, and **Remove**, which
+  signs the account out on this machine. Threads and their history stay.
 
-Each account signs in once to the MCP servers that need it, such as a company Jira server.
-They are listed under the account's sign-in, each with its own **Sign in**; on mobile they
-are in the account's menu.
+With **Switch accounts at usage limits** on, T3 Code makes the next account active when the
+active one runs out of usage and continues the stopped threads (see [Usage limits](#usage-limits)).
+The Accounts section shows which account is next and the last switches.
 
-For a completely separate configuration, such as a preset with different settings or a
-router connection, use its own Claude config directory instead. On the environment's
-machine, create the login:
+Switching needs Claude Code 2.1.328 or newer on Linux. On macOS, Claude keeps its login in the
+Keychain, and on Windows T3 Code can't sign Claude in yet, so there T3 Code manages one Claude
+account and the list shows why. On mobile, **Settings > Providers > Claude** offers the same list.
+
+Earlier versions of this fork kept each extra account in its own folder under `~/.claude-accounts`.
+On the first start of this version, each such account becomes an entry of the main Claude
+provider's list, keeping its name; its old provider id keeps working for existing threads, and the
+previous settings are saved next to `settings.json` as `settings.json.bak-claude-accounts`.
+
+## MCP servers
+
+**Settings > Providers > Claude > MCP servers** lists the MCP servers Claude itself is configured
+with: your own servers, the selected project's `.mcp.json` and local servers, servers from plugins,
+claude.ai connectors and servers your organization sets. Pick a project at the top of Settings to
+see its servers. Each row shows whether the server is connected and how many tools it offers,
+needs a sign-in, failed to connect, or is off in the project.
+
+- **Add server** adds a remote (HTTP or SSE) server or a local command, for all your projects, for
+  the project only for you, or shared with the team through `.mcp.json`. Header and environment
+  values stay on the machine and are never shown again.
+- **Sign in** signs Claude in to a server that needs it. Sign-ins are shared by all accounts.
+- **Reconnect in running threads** applies a sign-in to threads that are already running; other
+  threads pick up changes when they start.
+- **Turn off in this project**, **Edit** and **Remove** change Claude's own configuration. Servers
+  from plugins, claude.ai and your organization are managed there and can't be edited here.
+
+## Separate configurations
+
+For a completely separate configuration, such as a preset with different settings or a router
+connection, give a Claude provider its own folder. On the environment's machine, create the login:
 
 ```bash
 mkdir -p ~/.claude_personal
 CLAUDE_CONFIG_DIR=~/.claude_personal claude auth login
 ```
 
-Then choose **Configure manually** when you add the Claude provider:
+Then choose **Configure manually** when you add the Claude provider and set its **Claude folder**:
 
-| Instance        | Binary path | CLAUDE_CONFIG_DIR path |
-| --------------- | ----------- | ---------------------- |
-| Claude Work     | `claude`    | Leave empty            |
-| Claude Personal | `claude`    | `~/.claude_personal`   |
+| Instance        | Binary path | Claude folder        |
+| --------------- | ----------- | -------------------- |
+| Claude Work     | `claude`    | Leave empty          |
+| Claude Personal | `claude`    | `~/.claude_personal` |
 
-An empty config-directory setting uses Claude Code's normal configuration. The
-custom setting changes `CLAUDE_CONFIG_DIR`, leaving `HOME` and the system keychain
-location intact. Use the same variable for the login command. Setting `HOME`
-instead can put credentials where this provider will not find them. A separate
-directory keeps its own conversations: a thread that moves to it starts a new session
-and receives a handoff of the recent conversation.
+An empty folder uses Claude Code's normal configuration. The setting changes `CLAUDE_CONFIG_DIR`,
+leaving `HOME` and the system keychain location intact. Use the same variable for the login
+command. Setting `HOME` instead can put credentials where this provider will not find them. A
+separate folder has its own accounts and conversations: a thread that moves to it starts a new
+session and receives a handoff of the recent conversation. Two Claude providers can't use the
+same folder.
 
 For presets that differ only in API keys or endpoints, use the instance's
 **Environment variables**. Variable assignments do not belong in **Launch arguments**.
@@ -99,10 +130,13 @@ limit was reached and the remaining wait when Claude provides a reset time.
 Claude Code holds the turn until that window reopens, so it can keep showing as
 working. Wait for the reset, or stop the turn and continue later. The warning's
 timestamp shows when the displayed wait started. With
-[Switch accounts at usage limits](./thread-sidebar.md#inspect-agent-work) on, a
-turn that stops on the limit continues on another Claude account with usage left.
-A turn Claude holds moves once it stops, which can take 10 minutes. To move it
-sooner, stop it and send your next message; it starts on another account.
+[Switch accounts at usage limits](./thread-sidebar.md#inspect-agent-work) on, T3 Code
+makes the next signed-in account with usage left active, and every Claude thread
+moves to it; the threads that stopped on the limit continue. A turn Claude holds
+moves once it stops, which can take 10 minutes. To move it sooner, stop it and send
+your next message. With the setting off, the composer offers **Switch Claude to** the
+next account instead. T3 Code switches at most 5 times an hour, then pauses
+automatic switching for the hour; **Resume now** in the Accounts section ends the pause.
 
 ## Skills
 

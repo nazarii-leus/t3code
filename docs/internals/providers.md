@@ -49,6 +49,9 @@ client connections and provider-instance rebuilds. Releases are immutable, with 
 selecting the version for new processes. Running processes hold leases on their version. Updates
 and removal must respect those leases instead of replacing executables under a running agent.
 
+Claude keeps several accounts in one Claude folder and switches only the login under Claude's own
+locks; see [Claude accounts in one folder](./claude-accounts.md).
+
 ## Setup must not happen as a health-check side effect
 
 Opening a provider session can start MCP servers, run hooks, or launch a login browser.

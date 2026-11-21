@@ -295,7 +295,8 @@ picks an account that offers the thread's model and still reports usage left,
 preferring one that can resume the same session. An account that reports no usage,
 such as an API key, is never picked. The thread notes which account took over and
 stays on it. A message you send to an account that is already out of usage starts
-on another account the same way. With no account available, or after you stop the thread or choose to
+on another account the same way. Claude's [account list](./providers-claude.md#accounts) switches
+the active account instead, so every Claude thread moves with it. With no account available, or after you stop the thread or choose to
 resume or snooze it, the thread waits for the reset as above. The provider must
 report a reset time. Rotating accounts can break a provider's terms; see the
 [FAQ](./faq.md#can-i-add-a-bunch-of-accounts-for-one-provider).
