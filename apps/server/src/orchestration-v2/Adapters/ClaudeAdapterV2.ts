@@ -1,5 +1,9 @@
 import * as DocumentText from "../../provider/DocumentText.ts";
 import {
+  liveClaudeQueryKey,
+  trackLiveClaudeQuery,
+} from "../../provider/claudeMcp/liveClaudeQueries.ts";
+import {
   compactDynamicToolOutput,
   mcpToolResultOutput,
   toolOutputImages,
@@ -1608,6 +1612,11 @@ export const layerQueryRunner: Layer.Layer<
             ),
           catch: (cause) => queryRunnerError(cause, "query"),
         }).pipe(
+          Effect.tap((queryRuntime) =>
+            Effect.sync(() =>
+              trackLiveClaudeQuery(liveClaudeQueryKey(options.env), queryRuntime, processExit),
+            ),
+          ),
           Effect.tap((queryRuntime) =>
             restore(
               Effect.gen(function* () {

@@ -1,3 +1,6 @@
+// @effect-diagnostics nodeBuiltinImport:off - the store folder is named by a hash of the Claude folder.
+import * as NodeCrypto from "node:crypto";
+
 import { ClaudeSettings, ProviderDriverKind, type ServerProvider } from "@t3tools/contracts";
 import * as Cache from "effect/Cache";
 import type * as Cause from "effect/Cause";
@@ -64,11 +67,13 @@ import {
 } from "./ClaudeHome.ts";
 import type { ProviderAuthController } from "@t3tools/provider-core/server/auth";
 import { makeClaudeAuth } from "./ClaudeAuth.ts";
-import {
-  materializeClaudeShadowHome,
-  resolveClaudeShadowHome,
-  type ClaudeShadowHomeError,
-} from "./ClaudeHomeLayout.ts";
+import * as SubscriptionRef from "effect/SubscriptionRef";
+import { makeClaudeAccounts, type ClaudeAccounts } from "../claudeAccounts/ClaudeAccounts.ts";
+import { ClaudeAccountStoreError } from "../claudeAccounts/ClaudeAccountStore.ts";
+import * as DateTime from "effect/DateTime";
+import { claudeUsageResponseToLimits } from "../claudeUsageLimits.ts";
+import { runClaudeCommand, withClaudeMcpQuery } from "../ClaudeProvider.ts";
+import { makeClaudeMcpManager } from "../claudeMcp/ClaudeMcpManager.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { makeClaudeMaintenanceResolution } from "./ClaudeMaintenance.ts";
 const decodeClaudeSettings = Schema.decodeSync(ClaudeSettings);
@@ -127,29 +132,8 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
       .current(DRIVER_KIND)
       .pipe(Effect.map(resolveClaudeModelCatalog));
     const processEnv = yield* mergeClaudeProcessEnvironment(config, environment, process.env);
-    const shadowHome = yield* resolveClaudeShadowHome(config, processEnv);
-    // A shadow home that cannot be prepared leaves the account usable and says why on its row.
-    const shadowHomeProblem = yield* Ref.make<string | undefined>(undefined);
-    const prepareShadowHome =
-      shadowHome === undefined
-        ? Effect.void
-        : materializeClaudeShadowHome(shadowHome).pipe(
-            Effect.matchEffect({
-              onFailure: (error: ClaudeShadowHomeError) =>
-                Ref.set(shadowHomeProblem, error.message).pipe(
-                  Effect.andThen(
-                    Effect.logWarning("Could not prepare the Claude shadow home.", {
-                      detail: error.message,
-                    }),
-                  ),
-                ),
-              onSuccess: () => Ref.set(shadowHomeProblem, undefined),
-            }),
-          );
-    yield* prepareShadowHome;
-    // Everything below runs Claude in the account's own home.
-    const accountConfig =
-      shadowHome === undefined ? config : { ...config, homePath: shadowHome.shadowHomePath };
+    // Every account of this provider uses this one folder; switching moves only the login.
+    const accountConfig = config;
     const fallbackContinuationIdentity = defaultProviderContinuationIdentity({
       driverKind: DRIVER_KIND,
       instanceId,
@@ -314,21 +298,10 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
               : {}),
           };
 
-    const withShadowHomeProblem = (provider: ServerProvider) =>
-      Ref.get(shadowHomeProblem).pipe(
-        Effect.map((problem) =>
-          problem !== undefined && provider.status === "ready"
-            ? { ...provider, status: "warning" as const, message: problem }
-            : provider,
-        ),
-      );
-
     // Set once the sign-in exists; each check re-reads the account's MCP servers and their sign-ins.
     const authRef = yield* Ref.make<ProviderAuthController | undefined>(undefined);
-    const checkProvider = prepareShadowHome.pipe(
-      Effect.andThen(
-        Ref.get(authRef).pipe(Effect.flatMap((auth) => auth?.refreshMethods ?? Effect.void)),
-      ),
+    const checkProvider = Ref.get(authRef).pipe(
+      Effect.flatMap((auth) => auth?.refreshMethods ?? Effect.void),
       Effect.andThen(catalogService.refreshInBackground),
       Effect.andThen(
         modelCatalog.pipe(
@@ -355,7 +328,6 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
           ),
           Effect.map(stampIdentity),
           Effect.map(withSignIn),
-          Effect.flatMap(withShadowHomeProblem),
         ),
       ),
       // Disabled, failed version checks and interruption never reach the probe.
@@ -469,15 +441,135 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
       ),
     );
 
+    const platform = yield* HostProcess.Platform;
+    const folderKey = yield* fileSystem.realPath(configDir).pipe(
+      Effect.orElseSucceed(() => configDir),
+      Effect.map((real) => NodeCrypto.createHash("sha256").update(real).digest("hex").slice(0, 12)),
+    );
+    const storeDir = path.join(stateDir, "provider-accounts", "claude", folderKey);
+    yield* fileSystem.makeDirectory(storeDir, { recursive: true, mode: 0o700 }).pipe(Effect.ignore);
+    yield* fileSystem
+      .writeFileString(path.join(storeDir, "folder.txt"), configDir)
+      .pipe(Effect.ignore);
+    const refreshActive = Cache.invalidateAll(capabilitiesProbeCache).pipe(
+      Effect.andThen(snapshot.refresh),
+      Effect.asVoid,
+    );
+    const accounts: ClaudeAccounts = yield* makeClaudeAccounts({
+      instanceId,
+      folder: configDir,
+      profileFile: accountConfigPath,
+      storeDir,
+      platform,
+      probeStored: (accountDir) =>
+        probeClaudeCapabilities(
+          { ...effectiveConfig, homePath: accountDir },
+          processEnv,
+          accountDir,
+        ).pipe(
+          Effect.flatMap((capabilities) =>
+            DateTime.now.pipe(
+              Effect.map((now) => ({
+                models: capabilities.models?.map((model) => model.value),
+                usageLimits: capabilities.usage
+                  ? claudeUsageResponseToLimits({
+                      response: capabilities.usage,
+                      checkedAt: capabilities.usageCheckedAt ?? DateTime.formatIso(now),
+                    }).limits
+                  : undefined,
+              })),
+            ),
+          ),
+          Effect.mapError(
+            (cause) =>
+              new ClaudeAccountStoreError({
+                operation: "probe",
+                detail: cause.message || "Claude could not check this account.",
+                cause,
+              }),
+          ),
+          Effect.provideService(FileSystem.FileSystem, fileSystem),
+          Effect.provideService(Path.Path, path),
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+        ),
+      runClaude: (dir, args) =>
+        runClaudeCommand({ ...effectiveConfig, homePath: dir }, args, processEnv, dir).pipe(
+          Effect.map((result) => ({ code: result.code })),
+          Effect.mapError(
+            (cause) =>
+              new ClaudeAccountStoreError({ operation: "command", detail: cause.message, cause }),
+          ),
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+          Effect.provideService(Path.Path, path),
+        ),
+      activeSnapshot: snapshot.getSnapshot,
+      refreshActive,
+    }).pipe(
+      Effect.provideService(FileSystem.FileSystem, fileSystem),
+      Effect.provideService(Path.Path, path),
+    );
+    // The provider snapshot carries the account list; it is re-sent when either side changes.
+    const accountsRef = yield* SubscriptionRef.make(yield* accounts.snapshot);
+    yield* Effect.forkScoped(
+      Stream.runForEach(accounts.changes, (next) => SubscriptionRef.set(accountsRef, next)),
+    );
+    const withAccounts = (provider: ServerProvider) =>
+      SubscriptionRef.get(accountsRef).pipe(
+        Effect.map((list) => ({ ...provider, accounts: list })),
+      );
+    const snapshotWithAccounts = {
+      ...snapshot,
+      getSnapshot: snapshot.getSnapshot.pipe(Effect.flatMap(withAccounts)),
+      refresh: snapshot.refresh.pipe(Effect.flatMap(withAccounts)),
+      streamChanges: Stream.zipLatestWith(
+        snapshot.streamChanges,
+        SubscriptionRef.changes(accountsRef),
+        (provider, list) => ({ ...provider, accounts: list }),
+      ),
+    } satisfies typeof snapshot;
+
+    // Accounts are re-rendered when the active account's own snapshot changes (its usage, its login).
+    yield* Effect.forkScoped(Stream.runForEach(snapshot.streamChanges, () => accounts.refresh));
+    const neutralCwd = path.join(storeDir, "mcp-cwd");
+    yield* fileSystem
+      .makeDirectory(neutralCwd, { recursive: true, mode: 0o700 })
+      .pipe(Effect.ignore);
+    const claudeEnvironment = yield* makeClaudeEnvironment(effectiveConfig, processEnv);
+    const mcp = yield* makeClaudeMcpManager({
+      instanceId,
+      folder: configDir,
+      profileFile: accountConfigPath,
+      neutralCwd,
+      binaryPath: effectiveConfig.binaryPath,
+      environment: claudeEnvironment,
+      query: (input) =>
+        withClaudeMcpQuery({
+          claudeSettings: effectiveConfig,
+          environment: processEnv,
+          cwd: input.cwd,
+          ...(input.only ? { only: input.only } : {}),
+          use: input.use,
+        }).pipe(
+          Effect.provideService(FileSystem.FileSystem, fileSystem),
+          Effect.provideService(Path.Path, path),
+        ),
+      activeAccountName: accounts.snapshot.pipe(
+        Effect.map((list) => list.accounts.find((account) => account.active)?.name ?? null),
+      ),
+    }).pipe(
+      Effect.provideService(FileSystem.FileSystem, fileSystem),
+      Effect.provideService(Path.Path, path),
+    );
+
     const auth = signInAvailable
       ? yield* makeClaudeAuth({
           instanceId,
           binaryPath: effectiveConfig.binaryPath,
           environment: yield* makeClaudeEnvironment(effectiveConfig, processEnv),
           configDir,
-          accountFile: accountConfigPath,
           cwd: stateDir,
-          accountEmail: effectiveConfig.accountEmail,
+          accounts,
+          mcp,
           refresh: Cache.invalidateAll(capabilitiesProbeCache).pipe(
             Effect.andThen(snapshot.refresh),
           ),
@@ -489,6 +581,8 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
       instanceId,
       driverKind: DRIVER_KIND,
       ...(auth ? { auth } : {}),
+      accounts,
+      mcp,
       continuationIdentity: {
         ...fallbackContinuationIdentity,
         continuationKey: continuationGroupKey,
@@ -496,7 +590,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
       displayName,
       accentColor,
       enabled,
-      snapshot,
+      snapshot: snapshotWithAccounts,
       invalidateCaches: Cache.invalidateAll(capabilitiesProbeCache),
       workspaceRescans: Stream.fromQueue(workspaceRescans),
       snapshotForCwd: (cwd: string) =>

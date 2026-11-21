@@ -619,7 +619,7 @@ const probeClaudeCapabilities = (
 
 type ClaudeCapabilitiesProbeError = Effect.Error<ReturnType<typeof probeClaudeCapabilities>>;
 
-const runClaudeCommand = Effect.fn("runClaudeCommand")(function* (
+export const runClaudeCommand = Effect.fn("runClaudeCommand")(function* (
   claudeSettings: ClaudeSettings,
   args: ReadonlyArray<string>,
   environment?: NodeJS.ProcessEnv,
@@ -886,11 +886,6 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
     parsedVersion
       ? yield* resolveResetCredits(parsedVersion)
       : undefined;
-  const expectedEmail = claudeSettings.accountEmail.trim();
-  const wrongAccount =
-    expectedEmail.length > 0 &&
-    capabilities.email !== undefined &&
-    capabilities.email.toLowerCase() !== expectedEmail.toLowerCase();
   return buildServerProvider({
     presentation: CLAUDE_PRESENTATION,
     enabled: claudeSettings.enabled,
@@ -902,20 +897,14 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
     probe: {
       installed: true,
       version: parsedVersion,
-      status: wrongAccount ? "warning" : "ready",
+      status: "ready",
       auth: {
         status: "authenticated",
         ...(capabilities.email ? { email: capabilities.email } : {}),
         ...(capabilities.workspaceId ? { workspaceId: capabilities.workspaceId } : {}),
         ...(authMetadata ? authMetadata : {}),
       },
-      ...(wrongAccount
-        ? {
-            message: `Signed in as ${capabilities.email}, not ${expectedEmail}. Sign in again with ${expectedEmail}.`,
-          }
-        : versionUpgradeMessage
-          ? { message: versionUpgradeMessage }
-          : {}),
+      ...(versionUpgradeMessage ? { message: versionUpgradeMessage } : {}),
       usageLimits: resetCredits ? { ...usageLimits, resetCredits } : usageLimits,
     },
   });
@@ -967,3 +956,91 @@ export const makePendingClaudeProvider = Effect.fn("ClaudeProvider.makePendingCl
 );
 
 export { probeClaudeCapabilities };
+
+export class ClaudeMcpQueryError extends Schema.TaggedError<ClaudeMcpQueryError>()(
+  "ClaudeMcpQueryError",
+  { detail: Schema.String, cause: Schema.optional(Schema.Defect()) },
+) {
+  override get message(): string {
+    return this.detail;
+  }
+}
+
+export type ClaudeMcpQuery = Pick<
+  ReturnType<typeof claudeQuery>,
+  "mcpServerStatus" | "toggleMcpServer" | "reconnectMcpServer"
+>;
+
+/**
+ * A short Claude session with MCP servers on, for the MCP list in Settings. `only` checks one server
+ * by itself; otherwise every configured source is loaded as threads see it in `cwd`.
+ */
+export const withClaudeMcpQuery = <A>(input: {
+  readonly claudeSettings: ClaudeSettings;
+  readonly environment: NodeJS.ProcessEnv;
+  readonly cwd: string;
+  readonly only?: { readonly name: string; readonly config: Record<string, unknown> };
+  readonly use: (query: ClaudeMcpQuery) => Promise<A>;
+}) => {
+  const abort = new AbortController();
+  return Effect.gen(function* () {
+    const claudeEnvironment = yield* makeClaudeEnvironment(input.claudeSettings, input.environment);
+    const executablePath = yield* resolveClaudeSdkExecutablePath(
+      input.claudeSettings.binaryPath,
+      claudeEnvironment,
+    );
+    const platform = yield* HostProcess.Platform;
+    const spawnVia =
+      platform === "win32"
+        ? "launcher-thread"
+        : platform === "linux" && (yield* Effect.promise(supportsEnvChdir))
+          ? "env"
+          : undefined;
+    return yield* Effect.tryPromise({
+      try: async () => {
+        const q = claudeQuery({
+          // oxlint-disable-next-line require-yield -- never yields, so no prompt reaches the API
+          prompt: (async function* (): AsyncGenerator<SDKUserMessage> {
+            await waitForAbortSignal(abort.signal);
+          })(),
+          options: {
+            ...(spawnVia === "env" ? { spawnClaudeCodeProcess: spawnClaudeProbeThroughEnv } : {}),
+            ...(spawnVia === "launcher-thread"
+              ? { spawnClaudeCodeProcess: spawnClaudeProbeOffThread }
+              : {}),
+            persistSession: false,
+            pathToClaudeCodeExecutable: executablePath,
+            abortController: abort,
+            settingSources: ["user", "project", "local"],
+            settings: { disableAllHooks: true },
+            allowedTools: [],
+            ...(input.only
+              ? {
+                  mcpServers: { [input.only.name]: input.only.config } as never,
+                  strictMcpConfig: true,
+                }
+              : {}),
+            env: {
+              ...providerProbeEnvironment(claudeEnvironment),
+              FORCE_CODE_TERMINAL: undefined,
+              CLAUDE_CODE_AUTO_CONNECT_IDE: "0",
+              CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL: "1",
+            },
+            cwd: input.cwd,
+            stderr: () => {},
+          },
+        });
+        await q.initializationResult();
+        return await input.use(q);
+      },
+      catch: (cause) =>
+        new ClaudeMcpQueryError({ detail: "Claude could not check its MCP servers.", cause }),
+    });
+  }).pipe(
+    Effect.timeoutOrElse({
+      duration: "45 seconds",
+      orElse: () => Effect.fail(new ClaudeMcpQueryError({ detail: "Check timed out after 45 s." })),
+    }),
+    Effect.ensuring(Effect.sync(() => abort.abort())),
+  );
+};

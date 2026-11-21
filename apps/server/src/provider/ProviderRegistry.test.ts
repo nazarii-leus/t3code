@@ -4408,36 +4408,6 @@ it.layer(
       ),
     );
 
-    it.effect("warns when another account than the account email is signed in", () =>
-      Effect.gen(function* () {
-        const status = yield* checkClaudeProviderStatus(
-          { ...defaultClaudeSettings, accountEmail: "Work@Example.com" },
-          claudeCapabilities({ email: "home@example.com", subscriptionType: "max" }),
-          { ANTHROPIC_BASE_URL: "" },
-        );
-        assert.strictEqual(status.status, "warning");
-        assert.strictEqual(status.auth.status, "authenticated");
-        assert.strictEqual(
-          status.message,
-          "Signed in as home@example.com, not Work@Example.com. Sign in again with Work@Example.com.",
-        );
-        const matching = yield* checkClaudeProviderStatus(
-          { ...defaultClaudeSettings, accountEmail: "Work@Example.com" },
-          claudeCapabilities({ email: "work@example.com", subscriptionType: "max" }),
-          { ANTHROPIC_BASE_URL: "" },
-        );
-        assert.strictEqual(matching.status, "ready");
-      }).pipe(
-        Effect.provide(
-          layerMockSpawner((args) => {
-            const joined = args.join(" ");
-            if (joined === "--version") return { stdout: "1.0.0\n", stderr: "", code: 0 };
-            throw new Error(`Unexpected args: ${joined}`);
-          }),
-        ),
-      ),
-    );
-
     it.effect.each([
       {
         name: "its own home path",

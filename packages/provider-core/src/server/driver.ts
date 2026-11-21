@@ -1,5 +1,12 @@
 // Context tags are runtime singletons; drivers need multiple instances.
 import type {
+  ProviderAccountsError,
+  ProviderAccountsSnapshot,
+  ProviderAccountSwitchEntry,
+  ProviderMcpError,
+  ProviderMcpServerConfigView,
+  ProviderMcpServerInput,
+  ProviderMcpSnapshot,
   ProviderConsumeResetCreditOutcome,
   AcpRegistryListSessionsResult,
   AcpRegistryListProvidersResult,
@@ -64,6 +71,10 @@ export interface ProviderInstance {
   readonly orchestrationAdapter: ProviderAdapter.ProviderAdapterV2["Service"];
   readonly textGeneration: ProviderTextGeneration;
   readonly auth?: ProviderAuthController;
+  /** Accounts of a provider that keeps one active login in one folder (Claude). */
+  readonly accounts?: ProviderAccountsController;
+  /** MCP servers of the provider's folder, and of a project when one is given. */
+  readonly mcp?: ProviderMcpController;
   readonly acpSessionManagement?: {
     readonly listSessions: (input: {
       readonly cwd: string;
@@ -87,6 +98,75 @@ export interface ProviderInstance {
       readonly providerId: string;
     }) => Effect.Effect<void, AcpRegistryOperationError>;
   };
+}
+
+export interface ProviderAccountsController {
+  readonly snapshot: Effect.Effect<ProviderAccountsSnapshot>;
+  readonly use: (
+    accountId: string,
+    initiator: ProviderAccountSwitchEntry["initiator"],
+  ) => Effect.Effect<ProviderAccountsSnapshot, ProviderAccountsError>;
+  readonly remove: (
+    accountId: string,
+  ) => Effect.Effect<ProviderAccountsSnapshot, ProviderAccountsError>;
+  readonly rename: (
+    accountId: string,
+    name: string,
+  ) => Effect.Effect<ProviderAccountsSnapshot, ProviderAccountsError>;
+  readonly setAutoSwitch: (
+    accountId: string,
+    enabled: boolean,
+  ) => Effect.Effect<ProviderAccountsSnapshot, ProviderAccountsError>;
+  readonly checkUsage: (accountId: string | null) => Effect.Effect<ProviderAccountsSnapshot>;
+  readonly resumeAutoSwitch: Effect.Effect<ProviderAccountsSnapshot>;
+  /** After a usage-limit failure on `failedAccountId`; returns the active account afterwards when it moved. */
+  readonly switchForLimit: (input: {
+    readonly failedAccountId: string | null;
+    readonly windowId: string | null;
+    readonly windowLabel: string | null;
+    readonly resetAt: string | null;
+    readonly modelsInUse: ReadonlyArray<string>;
+  }) => Effect.Effect<string | undefined>;
+  readonly earliestReset: (windowId: string | null) => Effect.Effect<string | undefined>;
+  readonly activeId: Effect.Effect<string | null>;
+}
+
+export interface ProviderMcpProject {
+  readonly id: string;
+  readonly name: string;
+  readonly root: string;
+}
+
+export interface ProviderMcpController {
+  readonly subscribe: (
+    project: ProviderMcpProject | null,
+  ) => Stream.Stream<ProviderMcpSnapshot, ProviderMcpError>;
+  readonly check: (
+    project: ProviderMcpProject | null,
+    key: string | null,
+  ) => Effect.Effect<ProviderMcpSnapshot, ProviderMcpError>;
+  readonly get: (
+    project: ProviderMcpProject | null,
+    key: string,
+  ) => Effect.Effect<ProviderMcpServerConfigView, ProviderMcpError>;
+  readonly save: (
+    project: ProviderMcpProject | null,
+    input: ProviderMcpServerInput,
+    mode: "add" | "replace",
+  ) => Effect.Effect<ProviderMcpSnapshot, ProviderMcpError>;
+  readonly remove: (
+    project: ProviderMcpProject | null,
+    key: string,
+  ) => Effect.Effect<ProviderMcpSnapshot, ProviderMcpError>;
+  readonly setEnabled: (
+    project: ProviderMcpProject,
+    key: string,
+    enabled: boolean,
+  ) => Effect.Effect<ProviderMcpSnapshot, ProviderMcpError>;
+  readonly reconnect: (
+    project: ProviderMcpProject | null,
+    key: string,
+  ) => Effect.Effect<{ readonly reconnected: number }, ProviderMcpError>;
 }
 
 export interface ProviderContinuationIdentity {

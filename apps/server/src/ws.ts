@@ -80,6 +80,10 @@ import {
   ProjectWriteFileError,
   ProjectMutationError,
   ProviderUploadFeedbackError,
+  ProviderAccountsError,
+  type ProjectId,
+  type ProviderInstanceId,
+  ProviderMcpError,
   ProviderSetupError,
   RelayClientInstallFailedError,
   type RelayClientInstallProgressEvent,
@@ -1544,6 +1548,55 @@ export const layerWsRpc = (
       const acpRegistrySessions = yield* AcpRegistrySessions.AcpRegistrySessions;
       const providerMaintenanceRunner = yield* ProviderMaintenanceRunner.ProviderMaintenanceRunner;
       const providerAuth = yield* ProviderAuthService.ProviderAuthService;
+      const accountsOf = (instanceId: ProviderInstanceId) =>
+        providerInstances.getInstance(instanceId).pipe(
+          Effect.flatMap((instance) =>
+            instance?.accounts
+              ? Effect.succeed(instance.accounts)
+              : Effect.fail(
+                  new ProviderAccountsError({
+                    instanceId,
+                    operation: "accounts",
+                    detail: "This provider has no account list.",
+                  }),
+                ),
+          ),
+        );
+      const mcpTarget = Effect.fn("ws.mcpTarget")(function* (
+        instanceId: ProviderInstanceId,
+        projectId: ProjectId | null,
+      ) {
+        const mcp = yield* mcpOf(instanceId);
+        if (projectId === null) return { mcp, project: null };
+        const project = yield* acpRegistrySessions.project(projectId).pipe(
+          Effect.mapError(
+            () =>
+              new ProviderMcpError({
+                instanceId,
+                operation: "project",
+                detail: "This project is no longer available.",
+              }),
+          ),
+        );
+        return {
+          mcp,
+          project: { id: project.id, name: project.title, root: project.workspaceRoot },
+        };
+      });
+      const mcpOf = (instanceId: ProviderInstanceId) =>
+        providerInstances.getInstance(instanceId).pipe(
+          Effect.flatMap((instance) =>
+            instance?.mcp
+              ? Effect.succeed(instance.mcp)
+              : Effect.fail(
+                  new ProviderMcpError({
+                    instanceId,
+                    operation: "mcp",
+                    detail: "This provider has no MCP server list.",
+                  }),
+                ),
+          ),
+        );
       const providerInstallation = yield* ProviderInstallation.ProviderInstallation;
       const serverSelfUpdate = yield* ServerSelfUpdate.ServerSelfUpdate;
       const npmRelease = yield* NpmRelease.NpmRelease;
@@ -2667,6 +2720,75 @@ export const layerWsRpc = (
         [WS_METHODS.providerAuthLogout]: (input) => providerAuth.logout(input),
         [WS_METHODS.providerAuthSubscribe]: (input) =>
           providerAuth.subscribe(input, currentSessionId),
+        [WS_METHODS.providerAccountsUse]: (input) =>
+          accountsOf(input.instanceId).pipe(
+            Effect.flatMap((accounts) =>
+              accounts.use(input.accountId, {
+                clientId: input.clientId ?? null,
+                kind: input.clientKind ?? "web",
+              }),
+            ),
+          ),
+        [WS_METHODS.providerAccountsRemove]: (input) =>
+          accountsOf(input.instanceId).pipe(
+            Effect.flatMap((accounts) => accounts.remove(input.accountId)),
+          ),
+        [WS_METHODS.providerAccountsRename]: (input) =>
+          accountsOf(input.instanceId).pipe(
+            Effect.flatMap((accounts) => accounts.rename(input.accountId, input.name)),
+          ),
+        [WS_METHODS.providerAccountsSetAutoSwitch]: (input) =>
+          accountsOf(input.instanceId).pipe(
+            Effect.flatMap((accounts) => accounts.setAutoSwitch(input.accountId, input.enabled)),
+          ),
+        [WS_METHODS.providerAccountsCheckUsage]: (input) =>
+          accountsOf(input.instanceId).pipe(
+            Effect.flatMap((accounts) => accounts.checkUsage(input.accountId)),
+          ),
+        [WS_METHODS.providerAccountsResumeAutoSwitch]: (input) =>
+          accountsOf(input.instanceId).pipe(
+            Effect.flatMap((accounts) => accounts.resumeAutoSwitch),
+          ),
+        [WS_METHODS.providerMcpSubscribe]: (input) =>
+          Stream.unwrap(
+            mcpTarget(input.instanceId, input.projectId).pipe(
+              Effect.map(({ mcp, project }) => mcp.subscribe(project)),
+            ),
+          ),
+        [WS_METHODS.providerMcpCheck]: (input) =>
+          mcpTarget(input.instanceId, input.projectId).pipe(
+            Effect.flatMap(({ mcp, project }) => mcp.check(project, input.key)),
+          ),
+        [WS_METHODS.providerMcpGet]: (input) =>
+          mcpTarget(input.instanceId, input.projectId).pipe(
+            Effect.flatMap(({ mcp, project }) => mcp.get(project, input.key)),
+          ),
+        [WS_METHODS.providerMcpSave]: (input) =>
+          mcpTarget(input.instanceId, input.projectId).pipe(
+            Effect.flatMap(({ mcp, project }) => mcp.save(project, input.input, input.mode)),
+          ),
+        [WS_METHODS.providerMcpRemove]: (input) =>
+          mcpTarget(input.instanceId, input.projectId).pipe(
+            Effect.flatMap(({ mcp, project }) => mcp.remove(project, input.key)),
+          ),
+        [WS_METHODS.providerMcpSetEnabled]: (input) =>
+          mcpTarget(input.instanceId, input.projectId).pipe(
+            Effect.flatMap(({ mcp, project }) =>
+              project
+                ? mcp.setEnabled(project, input.key, input.enabled)
+                : Effect.fail(
+                    new ProviderMcpError({
+                      instanceId: input.instanceId,
+                      operation: "setEnabled",
+                      detail: "Pick a project to turn a server on or off for it.",
+                    }),
+                  ),
+            ),
+          ),
+        [WS_METHODS.providerMcpReconnect]: (input) =>
+          mcpTarget(input.instanceId, input.projectId).pipe(
+            Effect.flatMap(({ mcp, project }) => mcp.reconnect(project, input.key)),
+          ),
         [WS_METHODS.providerInstallStart]: (input) => providerInstallation.start(input),
         [WS_METHODS.providerInstallCancel]: (input) => providerInstallation.cancel(input),
         [WS_METHODS.providerInstallSubscribe]: (input) => providerInstallation.subscribe(input),
