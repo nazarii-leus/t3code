@@ -9,6 +9,9 @@ const actions = vi.hoisted(() => ({
   onOpenChange: vi.fn(),
   canManageProviders: true,
 }));
+const auth = vi.hoisted(() => ({
+  start: vi.fn(async () => ({ _tag: "Success" as const, value: undefined })),
+}));
 const settingsHooks = vi.hoisted(() => ({
   read: vi.fn(() => ({ providerInstances: {} })),
   mutate: vi.fn(),
@@ -31,13 +34,14 @@ const preparedAgent = vi.hoisted((): AcpRegistrySearchAgent => ({
 vi.mock(import("../../state/server"), async (original) => {
   const actual = await original();
   const { Atom } = await import("effect/reactivity");
-  // The server offers Claude sign-in, so the Claude step shows Add Claude account.
+  // The server offers Claude sign-in and an account list, so the Claude step shows Add Claude account.
   const providers = Atom.make([
     {
       instanceId: "claudeAgent",
       driver: "claudeAgent",
       auth: { status: "authenticated" },
       setup: { canAuthenticate: true, canInstall: false },
+      accounts: { supported: true, accounts: [] },
     },
   ]);
   return {
@@ -48,6 +52,10 @@ vi.mock(import("../../state/server"), async (original) => {
     } as never,
   };
 });
+vi.mock(import("../../state/use-atom-command"), async (original) => ({
+  ...(await original()),
+  useAtomCommand: (() => auth.start) as never,
+}));
 vi.mock(import("@t3tools/client-runtime/state/runtime"), async (original) => ({
   ...(await original()),
   squashAtomCommandFailure: () => new Error("The settings update failed."),
@@ -163,6 +171,7 @@ function setup() {
   actions.canManageProviders = true;
   actions.toast.mockReset();
   actions.onOpenChange.mockReset();
+  auth.start.mockClear();
   settingsHooks.read.mockReset().mockReturnValue({ providerInstances: {} });
   settingsHooks.mutate.mockReset().mockResolvedValue({ _tag: "Success", value: {} });
   settingsHooks.useMutation.mockReset().mockReturnValue(settingsHooks.mutate);
@@ -190,36 +199,28 @@ describe("AddProviderInstanceDialog environment routing", () => {
     });
   });
 
-  it("adds a Claude account that shares the main settings, then signs it in", async () => {
+  it("adds a Claude account to the Claude provider's account list", async () => {
     setup();
-    settingsHooks.read.mockReturnValue({
-      providerInstances: {
-        claudeAgent_old: {
-          driver: "claudeAgent",
-          config: { shadowHomePath: "~/.claude-accounts/office-example-com" },
-        },
-      },
-    });
-    await using _screen = await render(dialog());
+    const onCreated = vi.fn();
+    await using _screen = await render(
+      <AddProviderInstanceDialog
+        open
+        environmentId={remoteEnvironmentId}
+        environmentLabel="Remote device"
+        onOpenChange={actions.onOpenChange}
+        onCreated={onCreated}
+      />,
+    );
     await act(async () => radio("Claude")!.click());
     await click("Add Claude account");
-    await type('input[aria-label="Email"]', "office@example.com");
-    await click("Continue to sign-in");
 
-    expect(settingsHooks.mutate).toHaveBeenCalledWith({
-      operation: "create",
-      instanceId: "claudeAgent_office_example_com",
-      instance: {
-        driver: "claudeAgent",
-        enabled: true,
-        displayName: "office@example.com",
-        config: {
-          shadowHomePath: "~/.claude-accounts/office-example-com-2",
-          accountEmail: "office@example.com",
-        },
-      },
+    expect(actions.onOpenChange).toHaveBeenCalledWith(false);
+    expect(onCreated).toHaveBeenCalledWith("claudeAgent", "claudeAgent");
+    expect(auth.start).toHaveBeenCalledWith({
+      environmentId: remoteEnvironmentId,
+      input: { instanceId: "claudeAgent", methodId: "account:add" },
     });
-    expect(signInStep()?.textContent).toContain("remote-device/claudeAgent_office_example_com");
+    expect(settingsHooks.mutate).not.toHaveBeenCalled();
   });
 
   it("includes the explicitly added default accent color when creating a provider", async () => {

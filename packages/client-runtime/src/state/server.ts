@@ -1517,6 +1517,59 @@ export function createServerEnvironmentAtoms<R, E>(
       label: "environment-data:provider:auth-logout",
       tag: WS_METHODS.providerAuthLogout,
     }),
+    switchProviderAccount: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:provider:accounts-use",
+      tag: WS_METHODS.providerAccountsUse,
+    }),
+    removeProviderAccount: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:provider:accounts-remove",
+      tag: WS_METHODS.providerAccountsRemove,
+    }),
+    renameProviderAccount: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:provider:accounts-rename",
+      tag: WS_METHODS.providerAccountsRename,
+    }),
+    setProviderAccountAutoSwitch: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:provider:accounts-auto-switch",
+      tag: WS_METHODS.providerAccountsSetAutoSwitch,
+    }),
+    checkProviderAccountsUsage: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:provider:accounts-check-usage",
+      tag: WS_METHODS.providerAccountsCheckUsage,
+    }),
+    resumeProviderAccountsAutoSwitch: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:provider:accounts-resume-auto-switch",
+      tag: WS_METHODS.providerAccountsResumeAutoSwitch,
+    }),
+    checkProviderMcp: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:provider:mcp-check",
+      tag: WS_METHODS.providerMcpCheck,
+    }),
+    getProviderMcpServer: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:provider:mcp-get",
+      tag: WS_METHODS.providerMcpGet,
+    }),
+    saveProviderMcpServer: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:provider:mcp-save",
+      tag: WS_METHODS.providerMcpSave,
+    }),
+    removeProviderMcpServer: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:provider:mcp-remove",
+      tag: WS_METHODS.providerMcpRemove,
+    }),
+    setProviderMcpServerEnabled: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:provider:mcp-set-enabled",
+      tag: WS_METHODS.providerMcpSetEnabled,
+    }),
+    reconnectProviderMcpServer: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:provider:mcp-reconnect",
+      tag: WS_METHODS.providerMcpReconnect,
+    }),
+    providerMcpState: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
+      label: "environment-data:provider:mcp-state",
+      tag: WS_METHODS.providerMcpSubscribe,
+      idleTtlMs: 0,
+    }),
     providerInstallState: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
       label: "environment-data:provider:install-state",
       tag: WS_METHODS.providerInstallSubscribe,

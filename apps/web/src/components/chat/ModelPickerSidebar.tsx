@@ -164,6 +164,10 @@ export const ModelPickerSidebar = memo(function ModelPickerSidebar(props: {
                 : outOfUsage
                   ? m(msg("{label}: Out of usage.", { label: entry.displayName }))
                   : entry.displayName;
+            // A provider that switches accounts in place names the account its threads run on.
+            const activeAccountName = entry.snapshot.accounts?.accounts.find(
+              (account) => account.active,
+            )?.name;
 
             const button = (
               <Toolbar.Button
@@ -236,6 +240,11 @@ export const ModelPickerSidebar = memo(function ModelPickerSidebar(props: {
                     align="center"
                   >
                     {tooltip}
+                    {activeAccountName ? (
+                      <span className="block text-muted-foreground">
+                        {m(msg("Account: {name}", { name: activeAccountName }))}
+                      </span>
+                    ) : null}
                   </TooltipPopup>
                 </Tooltip>
               </div>

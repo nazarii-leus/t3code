@@ -26,7 +26,13 @@ import {
   useState,
 } from "react";
 
+import { PROVIDER_ACCOUNT_RENEW_METHOD_PREFIX } from "@t3tools/contracts";
+import { useNavigate } from "@tanstack/react-router";
+
 import { ensureLocalApi } from "../../localApi";
+import { serverEnvironment } from "../../state/server";
+import { useAtomCommand } from "../../state/use-atom-command";
+import { useAccountSwitch } from "../settings/claude/useAccountSwitch";
 import { usePrimarySettings } from "../../hooks/useSettings";
 import { cn } from "../../lib/utils";
 import { formatUpcomingTimestamp } from "../../timestampFormat";
@@ -37,6 +43,7 @@ import { Button } from "../ui/button";
 import { OpenAI } from "../Icons";
 import { Alert, AlertTitle } from "../ui/alert";
 import { Popover, PopoverCreateHandle, PopoverPopup, PopoverTrigger } from "../ui/popover";
+import { AccountChip, accountInitials } from "./AccountChip";
 import { PaceIcon, ResetCreditDialog, barColor, usePaceMark, useResetCredit } from "./UsageLimits";
 import {
   collectExternalUsageLinks,
@@ -45,34 +52,6 @@ import {
   formatResetsIn,
   resetCreditChoices,
 } from "@t3tools/shared/usageLimitsCopy";
-
-function accountInitials(email: string): string {
-  const [local = "", domain = ""] = email.split("@");
-  return `${local[0] ?? ""}${domain[0] ?? ""}`.toUpperCase() || "?";
-}
-
-function accountHue(email: string): number {
-  let hash = 0;
-  for (let index = 0; index < email.length; index += 1) {
-    hash = (hash * 31 + email.charCodeAt(index)) | 0;
-  }
-  return Math.abs(hash) % 360;
-}
-
-function AccountChip({ email }: { readonly email: string }) {
-  const hue = accountHue(email);
-  const gt = useGT();
-  return (
-    <span
-      role="img"
-      aria-label={gt("Account {initials}", { initials: accountInitials(email) })}
-      className="inline-flex size-4 shrink-0 items-center justify-center rounded-full text-3xs leading-none font-semibold"
-      style={{ backgroundColor: `oklch(0.85 0.08 ${hue})`, color: `oklch(0.35 0.1 ${hue})` }}
-    >
-      {accountInitials(email)}
-    </span>
-  );
-}
 
 function AccountAvatar({
   account,
@@ -98,7 +77,7 @@ function AccountAvatar({
       />
     );
   }
-  return account.email ? <AccountChip email={account.email} /> : null;
+  return account.email ? <AccountChip seed={account.email} label={account.email} /> : null;
 }
 
 function AccountName({
@@ -112,7 +91,7 @@ function AccountName({
   if (account.email) {
     return (
       <span className={cn("inline-flex min-w-0 items-center", className)}>
-        <AccountChip email={account.email} />
+        <AccountChip seed={account.email} label={account.email} />
       </span>
     );
   }
@@ -157,6 +136,8 @@ function SegmentPopover({
     account.environments.length > 0
       ? account.environments.map((environment) => environment.label).join(", ")
       : account.sourceLabel;
+  const providerAccount = account.providerAccount;
+  const accountActions = use(ProviderAccountActionsContext);
   const choices =
     redeem && account.redeem && account.limits.resetCredits?.availableCount
       ? resetCreditChoices(account.limits.resetCredits, account.redeem.input, now, true, m)
@@ -183,6 +164,17 @@ function SegmentPopover({
       <div className="flex flex-col gap-1 border-t border-border/60 pt-2.5">
         {account.plan ? (
           <Row label={gt("Plan", { $context: "subscription plan" })}>{account.plan}</Row>
+        ) : null}
+        {account.providerAccount ? (
+          <Row label={gt("Status")}>
+            {account.providerAccount.active
+              ? gt("Active")
+              : account.providerAccount.state === "expired"
+                ? gt("Sign-in expired")
+                : remaining <= 0
+                  ? gt("Out of usage")
+                  : gt("Ready")}
+          </Row>
         ) : null}
         {where ? (
           <Row
@@ -213,6 +205,27 @@ function SegmentPopover({
           </Row>
         ) : null}
       </div>
+      {providerAccount && accountActions && !providerAccount.active ? (
+        providerAccount.state === "ready" ? (
+          <Button
+            size="xs"
+            variant="outline"
+            className="self-end"
+            onClick={() => accountActions.use(providerAccount)}
+          >
+            {gt("Use")}
+          </Button>
+        ) : providerAccount.state === "expired" ? (
+          <Button
+            size="xs"
+            variant="outline"
+            className="self-end"
+            onClick={() => accountActions.signInAgain(providerAccount)}
+          >
+            {gt("Sign in again")}
+          </Button>
+        ) : null
+      ) : null}
       {choices.length > 0 && redeem ? (
         <div className="flex flex-col gap-1.5 border-t border-border/60 pt-2.5 text-muted-foreground">
           {choices.map((choice) => (
@@ -243,6 +256,12 @@ function SegmentPopover({
  * it currently describes.
  */
 type SegmentPayload = Omit<Parameters<typeof SegmentPopover>[0], "now" | "onRedeem">;
+type ProviderAccountRef = NonNullable<LimitAccount["providerAccount"]>;
+/** Use and Sign in again for accounts of an instance that switches accounts in place (Claude). */
+const ProviderAccountActionsContext = createContext<{
+  readonly use: (account: ProviderAccountRef) => void;
+  readonly signInAgain: (account: ProviderAccountRef) => void;
+} | null>(null);
 const SegmentPopoverContext = createContext<ReturnType<
   typeof PopoverCreateHandle<SegmentPayload>
 > | null>(null);
@@ -403,7 +422,10 @@ function SegmentTriggers({
             type="button"
             style={{ gridColumn: index, gridRow: 1, ...paceMark?.gappedTrack }}
             aria-label={segmentLabel}
-            className="relative h-5 min-w-0 cursor-pointer rounded-md bg-muted text-start outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background data-[popup-open]:ring-1 data-[popup-open]:ring-inset data-[popup-open]:ring-border @2xl/pool:h-8"
+            className={cn(
+              "relative h-5 min-w-0 cursor-pointer rounded-md bg-muted text-start outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background data-[popup-open]:ring-1 data-[popup-open]:ring-inset data-[popup-open]:ring-border @2xl/pool:h-8",
+              account.providerAccount?.active && "ring-2 ring-foreground",
+            )}
           />
         }
       >
@@ -682,6 +704,41 @@ export function UsageLimitsPooled({
   const segmentPopoverActions = useRef<PopoverPrimitive.Root.Actions | null>(null);
   const pools = collectLimitPools(collectLimitAccounts(presentations), now);
   const notices = collectLimitNotices(presentations, m);
+  const accountSwitch = useAccountSwitch();
+  const navigate = useNavigate();
+  const startAuth = useAtomCommand(serverEnvironment.startProviderAuth, {
+    reportFailure: false,
+    reportDefect: false,
+  });
+  const providerOf = (ref: ProviderAccountRef) => {
+    const provider = presentations
+      .get(ref.environmentId)
+      ?.serverConfig?.providers.find((candidate) => candidate.instanceId === ref.instanceId);
+    const account = provider?.accounts?.accounts.find((candidate) => candidate.id === ref.id);
+    return provider && account ? { provider, account } : null;
+  };
+  const accountActions = {
+    use: (ref: ProviderAccountRef) => {
+      segmentPopover.close();
+      const found = providerOf(ref);
+      if (found) accountSwitch.requestUse({ environmentId: ref.environmentId, ...found });
+    },
+    signInAgain: (ref: ProviderAccountRef) => {
+      segmentPopover.close();
+      void navigate({
+        to: "/settings/providers",
+        search: { environmentId: ref.environmentId, instanceId: ref.instanceId },
+        hash: "claude-accounts",
+      });
+      void startAuth({
+        environmentId: ref.environmentId,
+        input: {
+          instanceId: ref.instanceId,
+          methodId: `${PROVIDER_ACCOUNT_RENEW_METHOD_PREFIX}${ref.id}`,
+        },
+      });
+    },
+  };
   const externalLinks = collectExternalUsageLinks(presentations, m);
   return (
     <div className="flex flex-col gap-8">
@@ -697,19 +754,22 @@ export function UsageLimitsPooled({
           </Fragment>
         ))}
       </SegmentPopoverContext>
-      <Popover handle={segmentPopover} actionsRef={segmentPopoverActions}>
-        {({ payload }) =>
-          payload ? (
-            <ActiveSegmentPopover
-              handle={segmentPopover}
-              actions={segmentPopoverActions}
-              payload={payload}
-              pools={pools}
-              now={now}
-            />
-          ) : null
-        }
-      </Popover>
+      <ProviderAccountActionsContext value={accountActions}>
+        <Popover handle={segmentPopover} actionsRef={segmentPopoverActions}>
+          {({ payload }) =>
+            payload ? (
+              <ActiveSegmentPopover
+                handle={segmentPopover}
+                actions={segmentPopoverActions}
+                payload={payload}
+                pools={pools}
+                now={now}
+              />
+            ) : null
+          }
+        </Popover>
+      </ProviderAccountActionsContext>
+      {accountSwitch.dialog}
       {externalLinks.map((link) => (
         <section
           key={link.url}

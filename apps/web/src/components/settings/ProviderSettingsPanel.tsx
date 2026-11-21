@@ -22,6 +22,7 @@ import {
   defaultInstanceIdForDriver,
   type EnvironmentId,
   type AcpRegistryUrlAuthAction,
+  PROVIDER_ACCOUNT_ADD_METHOD_ID,
   PROVIDER_DISPLAY_NAMES,
   ProviderDriverKind,
   type ProjectId,
@@ -106,6 +107,8 @@ import { TextGeneratorsSettings } from "./TextGeneratorsSettings";
 import { UsageProviderSettings } from "./UsageProviderSettings";
 import { ProviderSetupSection, readAntigravityAuthMethod } from "./ProviderSetupSection";
 import { ProviderAuthenticationSection } from "./ProviderAuthenticationSection";
+import { ProviderAccountsSection } from "./claude/ProviderAccountsSection";
+import { ProviderMcpSection } from "./claude/ProviderMcpSection";
 import { CodexSetupSection, CodexManagedRuntimeFields } from "./CodexSetupSection";
 import { readCodexSetupMode } from "./CodexSetupSection.logic";
 import { providerClients } from "./providerDriverMeta";
@@ -615,6 +618,17 @@ export function EnvironmentProviderSettings({
   const [selectedInstanceId, setSelectedInstanceId] = useState<ProviderInstanceId | null>(
     targetInstanceId ?? null,
   );
+  // The Claude accounts and MCP search targets live in the Claude editor, so select it first.
+  const searchTargetId = useSettingsSearchTargetId();
+  const [selectedForTarget, setSelectedForTarget] = useState<string | null>(null);
+  const claudeTargetInstanceId =
+    searchTargetId === "claude-accounts" || searchTargetId === "claude-mcp-servers"
+      ? serverProviders.find((provider) => provider.accounts)?.instanceId
+      : undefined;
+  if (claudeTargetInstanceId && selectedForTarget !== searchTargetId) {
+    setSelectedForTarget(searchTargetId);
+    setSelectedInstanceId(claudeTargetInstanceId);
+  }
   const [updatingProviderInstanceIds, setUpdatingProviderInstanceIds] = useState<
     ReadonlySet<ProviderInstanceId>
   >(() => new Set());
@@ -967,7 +981,14 @@ export function EnvironmentProviderSettings({
   // The selected card's sign-in section follows the started flow and offers the browser link.
   const signIn = useStableCallback((instanceId: ProviderInstanceId) => {
     setSelectedInstanceId(instanceId);
-    void startProviderAuth({ environmentId, input: { instanceId } }).then((result) => {
+    // Claude adds a sign-in to its account list rather than replacing the folder's.
+    const accounts = serverProviders.find(
+      (provider) => provider.instanceId === instanceId,
+    )?.accounts;
+    const input = accounts
+      ? { instanceId, methodId: PROVIDER_ACCOUNT_ADD_METHOD_ID }
+      : { instanceId };
+    void startProviderAuth({ environmentId, input }).then((result) => {
       if (result._tag !== "Failure" || isAtomCommandInterrupted(result)) return;
       const error = squashAtomCommandFailure(result);
       toastManager.add({
@@ -1020,6 +1041,7 @@ export function EnvironmentProviderSettings({
         liveProvider={serverProviders.find((candidate) => candidate.instanceId === row.instanceId)}
         isUpdateDispatching={updatingProviderInstanceIds.has(row.instanceId)}
         showProjectOverride={showProjectOverride}
+        projectId={representativeProjectId}
         projectOverrideValue={
           showProjectOverride
             ? settings.projectSettingsOverrides[representativeProjectId]?.providerInstances?.[
@@ -1324,6 +1346,7 @@ function ProviderInstanceRow({
   liveProvider,
   isUpdateDispatching,
   showProjectOverride,
+  projectId,
   projectOverrideValue,
   projectOverrideEffectiveEnabled,
   modelPreferences,
@@ -1344,6 +1367,7 @@ function ProviderInstanceRow({
   readonly liveProvider: ServerProvider | undefined;
   readonly isUpdateDispatching: boolean;
   readonly showProjectOverride: boolean;
+  readonly projectId: ProjectId | undefined;
   readonly projectOverrideValue: boolean | undefined;
   readonly projectOverrideEffectiveEnabled: boolean;
   readonly modelPreferences:
@@ -1361,6 +1385,11 @@ function ProviderInstanceRow({
       : undefined;
   const instance = explicitInstance ?? { driver };
   const driverOption = providerClients.get(driver);
+  // Claude's accounts and MCP servers replace its sign-in rows in Setup.
+  const claudeAccounts = mode === "editor" && liveProvider?.accounts ? liveProvider : undefined;
+  const mcpProject = allProjects.find(
+    (project) => project.environmentId === environmentId && project.id === projectId,
+  );
   const updateCandidate =
     liveProvider !== undefined && isProviderSettingsUpdateCandidate(liveProvider)
       ? liveProvider
@@ -1426,6 +1455,27 @@ function ProviderInstanceRow({
         ) : undefined
       }
       canWriteSettings={canWriteSettings}
+      accounts={
+        claudeAccounts ? (
+          <>
+            <ProviderAccountsSection
+              environmentId={environmentId}
+              environmentLabel={environmentLabel}
+              instanceId={instanceId}
+              provider={claudeAccounts}
+              readOnly={readOnly}
+            />
+            <ProviderMcpSection
+              environmentId={environmentId}
+              environmentLabel={environmentLabel}
+              instanceId={instanceId}
+              provider={claudeAccounts}
+              project={mcpProject ? { id: mcpProject.id, name: mcpProject.title } : null}
+              readOnly={readOnly}
+            />
+          </>
+        ) : undefined
+      }
       setup={
         mode === "editor" && driver === "antigravity" ? (
           <ProviderSetupSection
@@ -1464,6 +1514,7 @@ function ProviderInstanceRow({
         ) : mode === "editor" &&
           !readOnly &&
           liveProvider &&
+          !claudeAccounts &&
           (liveProvider.setup?.canAuthenticate ||
             (liveProvider.driver === "acpRegistry" && liveProvider.installed)) ? (
           <ProviderAuthenticationSection

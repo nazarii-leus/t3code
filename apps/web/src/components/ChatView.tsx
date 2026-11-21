@@ -5,10 +5,12 @@ import { ChildThreadApprovals } from "./chat/ChildThreadApprovals";
 import { workspaceAreaProps } from "../lib/workspaceFocus";
 import { sourceControlClients } from "@t3tools/client-runtime/source-control-clients";
 import {
+  exhaustedUsageWindow,
   resolveLimitSwitchForNewTurn,
   resolveLimitSwitchSelection,
   resolveNewThreadModelSelection,
 } from "@t3tools/shared/usageLimits";
+import { useAccountSwitch } from "./settings/claude/useAccountSwitch";
 import { resolveProviderInstanceDisplayName } from "@t3tools/client-runtime/state/provider-instance-display";
 import { queuedRunEditBlockedReason } from "@t3tools/client-runtime/queued-run-edit";
 import { ScrollToEndButton, WorkspaceFileDropOverlay } from "./chat/TimelineOverlays";
@@ -346,7 +348,11 @@ import { useProactivePanels } from "../hooks/useProactivePanels";
 import { useIncrementalTimelineEntries } from "../hooks/useIncrementalTimelineEntries";
 import { useRightPanelSurfaceClose } from "../hooks/useRightPanelSurfaceClose";
 import { ComposerBannerStack, type ComposerBannerStackItem } from "./chat/ComposerBannerStack";
-import { limitSwitchBannerItem, modelFallbackBannerItem } from "./chat/ComposerUsageLimits";
+import {
+  accountModelUnavailableBannerItem,
+  limitSwitchBannerItem,
+  modelFallbackBannerItem,
+} from "./chat/ComposerUsageLimits";
 import { ComposerSurface } from "./chat/ComposerSurface";
 import { resolveThreadSyncPhase } from "../threadSync";
 import { hasAvailableCompactionProvider } from "./chat/compaction.logic";
@@ -2611,6 +2617,15 @@ export default function ChatView(props: ChatViewProps) {
     );
     return item ? [item] : [];
   });
+  // Claude switches its account in place; its banners name accounts, not instances.
+  const accountSelection = composerSelectedModelSelection ?? activeThread?.modelSelection ?? null;
+  const accountProvider = providerStatuses.find(
+    (provider) =>
+      provider.instanceId === accountSelection?.instanceId && provider.accounts?.supported,
+  );
+  const accountSwitch = useAccountSwitch();
+  const openComposerModelPicker = useStableCallback(() => composerRef.current?.openModelPicker());
+  const [dismissedAccountModel, setDismissedAccountModel] = useState<string | null>(null);
   const limitedProvider = providerStatuses.find(
     (provider) => provider.instanceId === activeThread?.modelSelection.instanceId,
   );
@@ -2703,8 +2718,89 @@ export default function ChatView(props: ChatViewProps) {
           ]
         : [];
     const limitSwitchFrom = composerSelectedModelSelection ?? activeThread?.modelSelection ?? null;
+    const now = Date.parse(`${nowMinute}:00Z`);
+    const accounts = accountProvider?.accounts;
+    const activeAccount = accounts?.accounts.find((account) => account.active);
+    const accountWindow =
+      accountProvider && limitSwitchFrom && phase === "ready" && multipleModelSelections === null
+        ? exhaustedUsageWindow(accountProvider, now, limitSwitchFrom.model)
+        : undefined;
+    const accountTarget = accountWindow
+      ? accounts?.accounts.find((account) => account.id === accounts.autoSwitch.targetId)
+      : undefined;
+    const accountWindowKey =
+      accountTarget && limitSwitchFrom
+        ? `${limitSwitchFrom.instanceId}:${activeAccount?.id ?? ""}:${accountWindow?.resetsAt ?? ""}`
+        : null;
+    const accountSwitchItems: ComposerBannerStackItem[] =
+      accountTarget && activeAccount && accountWindowKey !== dismissedFallbackWindow
+        ? [
+            limitSwitchBannerItem(
+              {
+                fromName: activeAccount.name,
+                toName: accountTarget.name,
+                providerName: PROVIDER_DISPLAY_NAMES[accountProvider!.driver] ?? "Claude",
+                resetsAt: accountWindow?.resetsAt ?? null,
+                automatic: settings.switchAccountsAtUsageLimits,
+                timestampFormat,
+                onSwitch: () =>
+                  accountSwitch.requestUse({
+                    environmentId,
+                    provider: accountProvider!,
+                    account: accountTarget,
+                  }),
+                onDismiss: () => setDismissedFallbackWindow(accountWindowKey),
+              },
+              messages,
+            ),
+          ]
+        : [];
+    const accountModelKey =
+      limitSwitchFrom && accountProvider
+        ? `${limitSwitchFrom.instanceId}:${limitSwitchFrom.model}`
+        : null;
+    const accountModelUnavailable =
+      limitSwitchFrom &&
+      activeAccount?.models &&
+      activeAccount.models.length > 0 &&
+      !activeAccount.models.includes(limitSwitchFrom.model) &&
+      accountModelKey !== dismissedAccountModel;
+    const accountWithModel = accountModelUnavailable
+      ? accounts?.accounts.find(
+          (account) =>
+            !account.active &&
+            account.state === "ready" &&
+            account.models?.includes(limitSwitchFrom.model),
+        )
+      : undefined;
+    const accountModelItems: ComposerBannerStackItem[] =
+      accountModelUnavailable && limitSwitchFrom
+        ? [
+            accountModelUnavailableBannerItem(
+              {
+                modelName:
+                  accountProvider?.models.find((model) => model.slug === limitSwitchFrom.model)
+                    ?.name ?? limitSwitchFrom.model,
+                accountName: activeAccount.name,
+                providerName: PROVIDER_DISPLAY_NAMES[accountProvider!.driver] ?? "Claude",
+                switchToName: accountWithModel?.name ?? null,
+                onSwitch: () =>
+                  accountWithModel &&
+                  accountSwitch.requestUse({
+                    environmentId,
+                    provider: accountProvider!,
+                    account: accountWithModel,
+                  }),
+                onChooseModel: openComposerModelPicker,
+                onDismiss: () => setDismissedAccountModel(accountModelKey),
+              },
+              messages,
+            ),
+          ]
+        : [];
     const limitSwitch =
       // The server moves only a turn that starts while nothing runs.
+      !accountProvider &&
       limitSwitchFrom &&
       phase === "ready" &&
       multipleModelSelections === null &&
@@ -2762,6 +2858,8 @@ export default function ChatView(props: ChatViewProps) {
       return [
         ...feedbackBannerItems,
         ...fallbackItems,
+        ...accountModelItems,
+        ...accountSwitchItems,
         ...limitSwitchItems,
         ...limitRecoveryItems,
         ...extensionStatusItems,
@@ -2774,6 +2872,8 @@ export default function ChatView(props: ChatViewProps) {
     return [
       ...feedbackBannerItems,
       ...fallbackItems,
+      ...accountModelItems,
+      ...accountSwitchItems,
       ...limitSwitchItems,
       ...limitRecoveryItems,
       ...extensionStatusItems,
@@ -4171,6 +4271,7 @@ export default function ChatView(props: ChatViewProps) {
       {embedded ? null : <LinkPullRequestDialogHost />}
       <ThreadVisitWatermark threadRef={routeThreadRef} />
       <ExpandedImageDialogHost threadKey={routeThreadKey} />
+      {accountSwitch.dialog}
     </div>
   );
   return (

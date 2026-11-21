@@ -55,9 +55,17 @@ export function ThreadDetailsUsage({
       : null;
   // Only this instance's data: the report keeps one instance per login, and any other entry may be
   // a different login or workspace, so fall back to the instance's own snapshot.
+  // An instance that switches accounts in place reports every account; threads run on the active one.
   const limits =
-    report?.accounts.find((entry) => entry.instanceId === providerInstanceId)?.limits ??
+    report?.accounts.find(
+      (entry) =>
+        entry.instanceId === providerInstanceId &&
+        (!entry.providerAccount || entry.providerAccount.active),
+    )?.limits ??
     providers.find((provider) => provider.instanceId === providerInstanceId)?.usageLimits;
+  const activeAccount = providers
+    .find((provider) => provider.instanceId === providerInstanceId)
+    ?.accounts?.accounts.find((account) => account.active);
   if (!limits) return null;
   const notice = limitsNotice(limits, m);
 
@@ -68,6 +76,23 @@ export function ThreadDetailsUsage({
       showHeading={false}
     >
       <div className="grid grid-cols-[auto_minmax(3rem,1fr)_auto] gap-x-3 text-xs">
+        {activeAccount ? (
+          <UsageRow
+            label={gt("Account", { $context: "the provider account threads run on" })}
+            fill={null}
+            tone={null}
+            value={
+              activeAccount.plan
+                ? `${activeAccount.name} · ${activeAccount.plan}`
+                : activeAccount.name
+            }
+            tooltip={
+              <span className="text-foreground">
+                {gt("Claude threads run on {name}.", { name: activeAccount.name })}
+              </span>
+            }
+          />
+        ) : null}
         {notice ? (
           <UsageRow
             label={gt("Limits", { $context: "usage limits row label" })}

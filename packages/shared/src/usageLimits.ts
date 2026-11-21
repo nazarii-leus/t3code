@@ -374,6 +374,14 @@ export interface LimitAccount {
     readonly environmentId: EnvironmentId;
     readonly input: ProviderConsumeResetCreditInput;
   } | null;
+  /** Set for an account of an instance that switches accounts in place (Claude). */
+  readonly providerAccount?: {
+    readonly environmentId: EnvironmentId;
+    readonly instanceId: ProviderInstanceId;
+    readonly id: string;
+    readonly active: boolean;
+    readonly state: "ready" | "signed-out" | "expired" | "error";
+  };
   readonly limits: ServerProviderUsageLimits;
 }
 
@@ -460,7 +468,39 @@ export function collectLimitAccounts(presentations: LimitPresentations): readonl
   );
   for (const [environmentId, presentation] of presentations) {
     const label = presentation.entry.target.label;
+    for (const provider of presentation.serverConfig?.providers ?? []) {
+      if (!provider.enabled || !provider.accounts?.accounts.length) continue;
+      // Email and organization: two organizations of one email are separate accounts.
+      for (const account of provider.accounts.accounts) {
+        if (!account.usageLimits || limitsNotice(account.usageLimits) !== null) continue;
+        merge(
+          `${provider.driver}:${account.email?.toLowerCase() ?? account.id}:${account.organizationUuid}`,
+          {
+            key: `${environmentId}:${provider.instanceId}:${account.id}`,
+            driver: provider.driver,
+            displayName: account.name,
+            email: account.email ?? undefined,
+            plan: account.plan ?? undefined,
+            accentColor: provider.accentColor,
+            environments: [{ environmentId, label }],
+            sourceLabel: null,
+            redeem: account.active
+              ? { environmentId, input: { instanceId: provider.instanceId } }
+              : null,
+            providerAccount: {
+              environmentId,
+              instanceId: provider.instanceId,
+              id: account.id,
+              active: account.active,
+              state: account.state,
+            },
+            limits: account.usageLimits,
+          },
+        );
+      }
+    }
     for (const provider of providersWithLimits(presentation.serverConfig?.providers ?? [])) {
+      if (provider.accounts?.accounts.length) continue;
       if (!provider.usageLimits || limitsNotice(provider.usageLimits) !== null) continue;
       merge(resolveKey(nativeReport(provider)) ?? `${environmentId}:${provider.instanceId}`, {
         key: `${environmentId}:${provider.instanceId}`,
@@ -922,6 +962,44 @@ export function withUsageLimitsCommands(
   });
 }
 
+/** A switchable account's limits, or a notice standing in for a reading it doesn't have yet. */
+function providerAccountLimits(
+  account: NonNullable<ServerProvider["accounts"]>["accounts"][number],
+  now: number,
+): ServerProviderUsageLimits {
+  return (
+    account.usageLimits ?? {
+      checkedAt: DateTime.formatIso(DateTime.makeUnsafe(now)),
+      windows: [],
+      unavailable: {
+        reason: "probeFailed",
+        message: account.usageError ?? "Usage not checked yet.",
+      },
+    }
+  );
+}
+
+/** Every account of an instance that switches accounts in place, in its own order. */
+function providerAccountReports(
+  provider: ServerProvider,
+  now: number,
+): Array<UsageLimitsReport["accounts"][number]> {
+  return (provider.accounts?.accounts ?? []).map((account) => ({
+    id: `${provider.instanceId}:${account.id}`,
+    driver: provider.driver,
+    label: account.name,
+    ...(account.plan ? { plan: account.plan } : {}),
+    instanceId: provider.instanceId,
+    // Reset credits belong to the signed-in (active) account only.
+    ...(account.active ? { resetCreditInput: { instanceId: provider.instanceId } } : {}),
+    displayName: account.name,
+    ...(provider.accentColor ? { accentColor: provider.accentColor } : {}),
+    ...(account.email ? { email: account.email } : {}),
+    providerAccount: { id: account.id, active: account.active, ready: account.state === "ready" },
+    limits: providerAccountLimits(account, now),
+  }));
+}
+
 export function collectProviderUsageLimits(
   instanceId: ProviderInstanceId,
   providers: readonly ServerProvider[],
@@ -976,6 +1054,10 @@ export function collectProviderUsageLimits(
     usage: { provider, limits },
     credits,
   } of native) {
+    if (provider.accounts?.accounts.length) {
+      accounts.push(...providerAccountReports(provider, now));
+      continue;
+    }
     const key = resolveKey(nativeReport(provider));
     const hubCredits = sources
       .flatMap((source) => source.accounts.map((account) => ({ source, account })))

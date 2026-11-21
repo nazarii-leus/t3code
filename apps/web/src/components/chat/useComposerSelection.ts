@@ -105,9 +105,12 @@ export function useComposerSelection(input: ComposerSelectionInput) {
   const handleRuntimeModeChangeStable = useStableCallback(handleRuntimeModeChange);
 
   const openProviderSetup = (instanceId: ProviderInstanceId) => {
+    // Claude's sign-in lives in its Accounts section.
+    const accounts = providerStatuses.find((entry) => entry.instanceId === instanceId)?.accounts;
     void navigate({
       to: "/settings/providers",
       search: { environmentId, instanceId },
+      ...(accounts ? { hash: "claude-accounts" } : {}),
     });
   };
   const openProviderSetupStable = useStableCallback(openProviderSetup);

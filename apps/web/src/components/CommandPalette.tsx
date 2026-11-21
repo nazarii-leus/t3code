@@ -56,14 +56,21 @@ import {
   type FilesystemBrowseResult,
   SourceControlProviderKind,
   PRIMARY_LOCAL_ENVIRONMENT_ID,
+  PROVIDER_ACCOUNT_ADD_METHOD_ID,
   resolveEnvironmentMachineKind,
 } from "@t3tools/contracts";
+import { remainingPercent } from "@t3tools/shared/usageLimits";
+import { AccountChip } from "./usage/AccountChip";
+import { AccountSwitchContext, useAccountSwitch } from "./settings/claude/useAccountSwitch";
+import { environmentPresentations } from "../state/presentation";
 import { useLocation, useNavigate } from "@tanstack/react-router";
 import {
   ArrowLeftIcon,
   BugIcon,
   ChartNoAxesColumnIcon,
   CheckIcon,
+  UserRoundIcon,
+  UserRoundPlusIcon,
   ChevronRightIcon,
   CornerLeftUpIcon,
   FileSearchIcon,
@@ -88,6 +95,7 @@ import { openThreadFind } from "./chat/threadFindStore";
 import { dispatchPreviewAction } from "./preview/previewActionBus";
 import { previewBridge } from "./preview/previewBridge";
 import {
+  use,
   useDeferredValue,
   useEffect,
   useId,
@@ -326,33 +334,38 @@ export function CommandPalette({ children }: { children: ReactNode }) {
   const openChildSearch = (mode: "files" | "content", context: CommandPaletteReturnContext) =>
     dispatchCommandPalette({ _tag: "OpenChildSearch", mode, context });
   const composerHandleRef = useRef<ChatComposerHandle | null>(null);
+  // The switch confirm outlives the palette, which closes when an entry runs.
+  const accountSwitch = useAccountSwitch();
 
   return (
     <ComposerHandleContext value={composerHandleRef}>
-      <ThreadContextDragGhost />
-      <CommandDialog
-        open={state.open}
-        onOpenChange={(open, eventDetails) => {
-          if (!open && eventDetails.reason === "escape-key" && state.mode !== "command") {
-            eventDetails.cancel();
-            dispatchCommandPalette({ _tag: "BackToCommand" });
-            return;
-          }
-          setOpen(open);
-        }}
-      >
-        <div className="contents" inert={state.open}>
-          {children}
-        </div>
-        <CommandPaletteDialog
-          mode={state.mode}
-          session={state.session}
-          openIntent={state.openIntent}
-          setOpen={setOpen}
-          openChildSearch={openChildSearch}
-          initialContext={state.restoredSearch}
-        />
-      </CommandDialog>
+      <AccountSwitchContext value={accountSwitch.requestUse}>
+        <ThreadContextDragGhost />
+        <CommandDialog
+          open={state.open}
+          onOpenChange={(open, eventDetails) => {
+            if (!open && eventDetails.reason === "escape-key" && state.mode !== "command") {
+              eventDetails.cancel();
+              dispatchCommandPalette({ _tag: "BackToCommand" });
+              return;
+            }
+            setOpen(open);
+          }}
+        >
+          <div className="contents" inert={state.open}>
+            {children}
+          </div>
+          <CommandPaletteDialog
+            mode={state.mode}
+            session={state.session}
+            openIntent={state.openIntent}
+            setOpen={setOpen}
+            openChildSearch={openChildSearch}
+            initialContext={state.restoredSearch}
+          />
+        </CommandDialog>
+      </AccountSwitchContext>
+      {accountSwitch.dialog}
     </ComposerHandleContext>
   );
 }
@@ -427,6 +440,18 @@ function OpenCommandPaletteDialog(props: {
   const gt = useGT();
   const messages = useMessages();
   const navigate = useNavigate();
+  const requestAccountSwitch = use(AccountSwitchContext);
+  const startProviderAuth = useAtomCommand(serverEnvironment.startProviderAuth);
+  const accountPresentations = useAtomValue(
+    environmentPresentations.presentationsWithProvidersAtom,
+  );
+  // Providers that switch accounts in place (Claude), with their environment.
+  const claudeAccountProviders = [...accountPresentations].flatMap(
+    ([environmentId, presentation]) =>
+      (presentation.serverConfig?.providers ?? [])
+        .filter((provider) => provider.enabled && provider.accounts?.supported)
+        .map((provider) => ({ environmentId, label: presentation.entry.target.label, provider })),
+  );
   const pathname = useLocation({ select: (location) => location.pathname });
   const { openChildSearch, setOpen } = props;
   // Keyed by palette session: the intent and restored search only seed this
@@ -1732,6 +1757,71 @@ function OpenCommandPaletteDialog(props: {
       );
     },
   });
+
+  for (const { environmentId, label, provider } of claudeAccountProviders) {
+    const accounts = provider.accounts?.accounts ?? [];
+    const where =
+      accountPresentations.size > 1 ? gt(" on {environment}", { environment: label }) : "";
+    if (
+      requestAccountSwitch &&
+      accounts.filter((account) => account.state === "ready").length > 1
+    ) {
+      actionItems.push({
+        kind: "submenu",
+        value: `action:switch-claude-account:${environmentId}:${provider.instanceId}`,
+        searchTerms: ["account", "switch", "claude", "login", "usage"],
+        title: `${gt("Switch Claude account")}${where}`,
+        icon: <UserRoundIcon className={ITEM_ICON_CLASS} />,
+        addonIcon: <UserRoundIcon className={ADDON_ICON_CLASS} />,
+        groups: [
+          {
+            value: `claude-accounts:${environmentId}:${provider.instanceId}`,
+            label: gt("Claude accounts"),
+            items: accounts.map((account) => {
+              const windows = account.usageLimits?.windows ?? [];
+              return {
+                kind: "action" as const,
+                value: `claude-account:${environmentId}:${account.id}`,
+                searchTerms: [account.name, account.plan ?? ""],
+                title: account.plan ? `${account.name} · ${account.plan}` : account.name,
+                ...(windows.length > 0
+                  ? {
+                      description: gt("{percent}% left", {
+                        percent: Math.min(...windows.map(remainingPercent)),
+                      }),
+                    }
+                  : {}),
+                checked: account.active,
+                disabled: !account.active && account.state !== "ready",
+                icon: <AccountChip seed={account.id} label={account.name} />,
+                run: async () => {
+                  if (!account.active) requestAccountSwitch({ environmentId, provider, account });
+                },
+              };
+            }),
+          },
+        ],
+      });
+    }
+    actionItems.push({
+      kind: "action",
+      value: `action:add-claude-account:${environmentId}:${provider.instanceId}`,
+      searchTerms: ["account", "add", "claude", "login", "sign in"],
+      title: `${gt("Add Claude account")}${where}`,
+      icon: <UserRoundPlusIcon className={ITEM_ICON_CLASS} />,
+      run: async () => {
+        await navigate({
+          to: "/settings/providers",
+          search: { environmentId, instanceId: provider.instanceId },
+          hash: "claude-accounts",
+        });
+        await startProviderAuth({
+          environmentId,
+          input: { instanceId: provider.instanceId, methodId: PROVIDER_ACCOUNT_ADD_METHOD_ID },
+        });
+      },
+    });
+  }
 
   actionItems.push({
     kind: "action",

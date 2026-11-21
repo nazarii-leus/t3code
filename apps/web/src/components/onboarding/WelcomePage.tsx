@@ -581,6 +581,7 @@ function AgentsSection({
           <Link
             to="/settings/providers"
             search={{ environmentId, instanceId: provider.instanceId }}
+            {...(provider.accounts ? { hash: "claude-accounts" } : {})}
           />
         }
       >
