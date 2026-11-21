@@ -70,7 +70,7 @@ const acquire = (file: string, options: Parameters<typeof lock>[1]) =>
  * writes credentials under `<dir>/.storage-write.lock`. A request that waits more than ~8 s for the
  * refresh lock fails (step 1), so callers hold these for milliseconds only.
  */
-const claudeLocks: ClaudeLocks = {
+export const claudeLocks: ClaudeLocks = {
   withLocks: (dir, effect) =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -104,11 +104,11 @@ type Json = Record<string, unknown>;
 const asRecord = (value: unknown): Json =>
   value !== null && typeof value === "object" && !Array.isArray(value) ? (value as Json) : {};
 
-const pickLoginSet = (credentials: Json): Json =>
+export const pickLoginSet = (credentials: Json): Json =>
   Object.fromEntries(
     CLAUDE_LOGIN_KEYS.filter((key) => key in credentials).map((key) => [key, credentials[key]]),
   );
-const withoutLoginSet = (credentials: Json): Json =>
+export const withoutLoginSet = (credentials: Json): Json =>
   Object.fromEntries(
     Object.entries(credentials).filter(
       ([key]) => !(CLAUDE_LOGIN_KEYS as ReadonlyArray<string>).includes(key),

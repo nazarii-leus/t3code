@@ -45,7 +45,9 @@ import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 import { writeFileStringAtomically } from "@t3tools/shared/atomicWrite";
 import { resolveSymlinkTarget } from "@t3tools/shared/symlink";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as ServerConfig from "./config.ts";
+import { migrateClaudeAccountFolders } from "./provider/claudeAccounts/ClaudeAccountsMigration.ts";
 import { type DeepPartial, deepMerge } from "@t3tools/shared/Struct";
 import { fromJsonStringPretty, fromLenientJson } from "@t3tools/shared/schemaJson";
 import {
@@ -669,7 +671,7 @@ function foldLegacyProjectSettings(
 }
 
 const make = Effect.gen(function* () {
-  const { settingsPath } = yield* ServerConfig.ServerConfig;
+  const { settingsPath, stateDir } = yield* ServerConfig.ServerConfig;
   const fs = yield* FileSystem.FileSystem;
   const pathService = yield* Path.Path;
   const secretStore = yield* ServerSecretStore.ServerSecretStore;
@@ -915,8 +917,36 @@ const make = Effect.gen(function* () {
     const sourceControlMigration = hasLegacySourceControl
       ? migrateLegacySourceControlSettings(folded, legacySourceControl)
       : { settings: folded, secretMoves: [] };
+    // Claude account folders become accounts of the one Claude folder (kept, aliased, logins moved).
+    const accountsFolded = settingsFileTrusted
+      ? yield* migrateClaudeAccountFolders(sourceControlMigration.settings, {
+          stateDir,
+          homeDir: yield* HostProcess.HomeDirectory,
+          claudeConfigDir: (yield* HostProcess.Environment).CLAUDE_CONFIG_DIR,
+        }).pipe(
+          Effect.tap((next) =>
+            next === sourceControlMigration.settings
+              ? Effect.void
+              : fs
+                  .copyFile(settingsPath, `${settingsPath}.bak-claude-accounts`)
+                  .pipe(
+                    Effect.when(
+                      fs
+                        .exists(`${settingsPath}.bak-claude-accounts`)
+                        .pipe(Effect.map((there) => !there)),
+                    ),
+                    Effect.ignore,
+                  ),
+          ),
+          Effect.catchCause((cause) =>
+            Effect.logWarning("Could not fold the Claude account folders.", cause).pipe(
+              Effect.as(sourceControlMigration.settings),
+            ),
+          ),
+        )
+      : sourceControlMigration.settings;
     const migrated = settingsFileTrusted
-      ? yield* moveInlineSettingsSecrets(sourceControlMigration.settings)
+      ? yield* moveInlineSettingsSecrets(accountsFolded)
       : folded;
     if (
       migrated !== loaded ||

@@ -634,7 +634,11 @@ const make = Effect.gen(function* () {
             : serverSettings.getSettings.pipe(
                 Effect.orDie,
                 Effect.flatMap((current) =>
-                  resolveProjectProviderInstanceEnabled(current, input.projectId, input.instanceId)
+                  resolveProjectProviderInstanceEnabled(
+                    current,
+                    input.projectId,
+                    current.providerInstanceAliases[input.instanceId] ?? input.instanceId,
+                  )
                     ? Effect.void
                     : new ThreadManagementProviderInstanceDisabledError({
                         projectId: input.projectId,

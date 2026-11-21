@@ -516,6 +516,7 @@ export const makeProviderInstanceRegistry = Effect.fn(
 )(function* <R>(input: {
   readonly drivers: ReadonlyArray<AnyProviderDriver<R>>;
   readonly configMap: ProviderInstanceConfigMap;
+  readonly resolveAlias?: (id: ProviderInstanceId) => Effect.Effect<ProviderInstanceId | undefined>;
   /** A reason to show instead of running a driver, such as an administrator's policy. */
   readonly blockedReason?: BlockedReason | undefined;
 }): Effect.fn.Return<
@@ -685,7 +686,17 @@ export const makeProviderInstanceRegistry = Effect.fn(
   }
 
   const registry: ProviderInstanceRegistry["Service"] = {
-    getInstance: (id) => Ref.get(entries).pipe(Effect.map((map) => map.get(id)?.instance)),
+    // A retired id (an account folded into another instance) reaches the instance serving it now.
+    getInstance: (id) =>
+      Ref.get(entries).pipe(
+        Effect.flatMap((map) =>
+          map.has(id) || !input.resolveAlias
+            ? Effect.succeed(map.get(id)?.instance)
+            : input
+                .resolveAlias(id)
+                .pipe(Effect.map((target) => (target ? map.get(target)?.instance : undefined))),
+        ),
+      ),
     listInstances: Ref.get(entries).pipe(
       Effect.map(
         (map) =>
@@ -716,6 +727,7 @@ export const makeProviderInstanceRegistry = Effect.fn(
 export const layer = <R>(input: {
   readonly drivers: ReadonlyArray<AnyProviderDriver<R>>;
   readonly configMap: ProviderInstanceConfigMap;
+  readonly resolveAlias?: (id: ProviderInstanceId) => Effect.Effect<ProviderInstanceId | undefined>;
   readonly blockedReason?: BlockedReason | undefined;
 }): Layer.Layer<
   ProviderInstanceRegistry | ProviderInstanceRegistryMutator.ProviderInstanceRegistryMutator,
