@@ -1122,6 +1122,23 @@ export function summarizeT3ToolCalls(
           );
       break;
     }
+    case "claude-accounts-read": {
+      const count = selected.length;
+      label = done
+        ? resolve(
+            msg(
+              "{count, plural, one {Checked Claude accounts {count} time} other {Checked Claude accounts {count} times}}",
+              { count },
+            ),
+          )
+        : resolve(
+            msg(
+              "{count, plural, one {Tried to check Claude accounts {count} time} other {Tried to check Claude accounts {count} times}}",
+              { count },
+            ),
+          );
+      break;
+    }
     case "theme-read": {
       const count = selected.length;
       label = done

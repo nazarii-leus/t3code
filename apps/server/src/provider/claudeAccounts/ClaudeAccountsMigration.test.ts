@@ -87,7 +87,7 @@ it.layer(NodeServices.layer)("migrateClaudeAccountFolders", (it) => {
               },
             },
             textGenerators: { [ProviderInstanceId.make("claude_team")]: { model: "x" } } as never,
-          } as ServerSettings;
+          } as unknown as ServerSettings;
           const options = { stateDir, homeDir: home, claudeConfigDir: undefined };
 
           const next = yield* migrateClaudeAccountFolders(settings, options);
