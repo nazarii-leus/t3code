@@ -6935,8 +6935,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       // A continuation on another account does not wait for this account's reset; it yields
       // only to Stop (also one that reached the run before its failure) or the user's own choice.
       const switching =
-        command.modelSelection !== undefined &&
-        command.modelSelection.instanceId !== run?.providerInstanceId;
+        command.usageLimitSwitchedAccount === true ||
+        (command.modelSelection !== undefined &&
+          command.modelSelection.instanceId !== run?.providerInstanceId);
       if (
         run?.id !== command.usageLimitContinuationOfRunId ||
         failure?.class !== "usage_limit" ||

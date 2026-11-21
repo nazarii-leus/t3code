@@ -19,6 +19,8 @@ import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 
+import type { ProviderAccountsController } from "@t3tools/provider-core/server/driver";
+
 import {
   ClaudeAccountStoreError,
   describeLogin,
@@ -225,14 +227,7 @@ export interface ClaudeAccounts {
   ) => Effect.Effect<ProviderAccountsSnapshot, ProviderAccountsError>;
   readonly checkUsage: (accountId: string | null) => Effect.Effect<ProviderAccountsSnapshot>;
   readonly resumeAutoSwitch: Effect.Effect<ProviderAccountsSnapshot>;
-  readonly switchForLimit: (input: {
-    readonly failedAccountId: string | null;
-    readonly windowId: string | null;
-    readonly windowLabel: string | null;
-    readonly resetAt: string | null;
-    readonly modelsInUse: ReadonlyArray<string>;
-  }) => Effect.Effect<string | undefined>;
-  readonly earliestReset: (windowId: string | null) => Effect.Effect<string | undefined>;
+  readonly switchForLimit: ProviderAccountsController["switchForLimit"];
   readonly adoptSignIn: (
     scratchDir: string,
     expectedId: string | null,
@@ -670,29 +665,52 @@ export const makeClaudeAccounts = Effect.fn("ClaudeAccounts.make")(function* (
     yield* publish;
   });
 
+  /** The account that was active at `atMs`, walking back through the switches made since. */
+  const activeAt = (history: StoreIndex["history"], currentId: string | null, atMs: number) => {
+    let account = currentId;
+    for (const entry of history) {
+      if (Date.parse(entry.at) <= atMs) break;
+      account = entry.fromId;
+    }
+    return account;
+  };
+
   const switchForLimit = Effect.fn("ClaudeAccounts.switchForLimit")(function* (input: {
-    readonly failedAccountId: string | null;
+    readonly failedAt: string | null;
     readonly windowId: string | null;
     readonly windowLabel: string | null;
     readonly resetAt: string | null;
     readonly modelsInUse: ReadonlyArray<string>;
   }) {
-    if (input.failedAccountId && input.windowId && input.resetAt) {
-      yield* noteLimited(input.failedAccountId, input.windowId, input.resetAt);
-    }
     return yield* switchLock.withPermits(1)(
       Effect.gen(function* () {
         const snapshot = yield* render();
         if (!snapshot.supported) return undefined;
-        const active = snapshot.accounts.find((account) => account.active);
-        // Someone switched already; the thread just continues on the active account.
-        if (active && input.failedAccountId && active.id !== input.failedAccountId)
-          return active.id;
         const now = yield* nowMs;
+        const before = yield* Ref.get(index);
+        const active = snapshot.accounts.find((account) => account.active);
+        const failedId = activeAt(
+          before.history,
+          active?.id ?? null,
+          input.failedAt ? Date.parse(input.failedAt) : now,
+        );
+        if (failedId && input.resetAt) {
+          const key = input.windowId ?? "limit";
+          if (before.limitedUntil[failedId]?.[key] !== input.resetAt) {
+            yield* noteLimited(failedId, key, input.resetAt);
+          }
+        }
+        const nameOfId = (id: string | null | undefined) =>
+          before.accounts.find((entry) => entry.id === id)?.name ?? "Claude";
+        // Someone switched since the failure: the thread just continues on the active account.
+        if (active && failedId && active.id !== failedId) {
+          return { fromName: nameOfId(failedId), toName: active.name };
+        }
         const current = yield* Ref.get(index);
         if (current.pausedUntil && Date.parse(current.pausedUntil) > now) return undefined;
+        const rendered = yield* render();
         const target = pickAccountSwitchTarget({
-          accounts: snapshot.accounts,
+          accounts: rendered.accounts,
           limitedUntil: current.limitedUntil,
           now,
           modelsInUse: input.modelsInUse,
@@ -710,29 +728,12 @@ export const makeClaudeAccounts = Effect.fn("ClaudeAccounts.make")(function* (
           clientId: null,
           kind: "server",
         }).pipe(Effect.result);
-        return switched._tag === "Success" ? target.id : undefined;
+        return switched._tag === "Success"
+          ? { fromName: nameOfId(failedId), toName: target.name }
+          : undefined;
       }),
     );
   });
-
-  const earliestReset = (windowId: string | null) =>
-    render().pipe(
-      Effect.map((snapshot) =>
-        snapshot.accounts
-          .filter((account) => account.autoSwitch && account.state === "ready")
-          .flatMap((account) =>
-            (account.usageLimits?.windows ?? [])
-              .filter(
-                (window) =>
-                  window.usedPercent >= 100 && (windowId === null || window.id === windowId),
-              )
-              .map((window) => window.resetsAt),
-          )
-          .filter((at): at is string => at !== undefined)
-          .toSorted()
-          .at(0),
-      ),
-    );
 
   /**
    * Takes over a login that a sign-in left in `scratchDir`: a new account is stored inactive (or
@@ -842,7 +843,6 @@ export const makeClaudeAccounts = Effect.fn("ClaudeAccounts.make")(function* (
     checkUsage,
     resumeAutoSwitch,
     switchForLimit,
-    earliestReset,
     adoptSignIn,
     activeId: activeLogin.pipe(Effect.map((login) => login?.accountId ?? null)),
     newScratchDir,

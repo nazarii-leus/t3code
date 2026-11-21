@@ -1,6 +1,10 @@
 import { PullRequestProviderError } from "@t3tools/source-control-core/server/PullRequestProvider";
 import { SourceControlProviderKind } from "@t3tools/contracts";
-import { limitRecoveryCommand, limitSwitchCommand } from "./UsageLimitRecoveryWorker.ts";
+import {
+  accountSwitchCommand,
+  limitRecoveryCommand,
+  limitSwitchCommand,
+} from "./UsageLimitRecoveryWorker.ts";
 import { createOrchestrationV2TurnItemVisibility } from "@t3tools/shared/orchestrationV2Timeline";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import * as SourceControlProviderRegistry from "../sourceControl/SourceControlProviderRegistry.ts";
@@ -8959,7 +8963,7 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
       }),
   );
 
-  it.effect.each(["switches", "armed", "stopped", "back"] as const)(
+  it.effect.each(["switches", "armed", "stopped", "back", "same-folder"] as const)(
     "continues a usage-limited thread on another account: %s",
     (scenario) =>
       Effect.gen(function* () {
@@ -9055,6 +9059,33 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
             threadId,
             limitRecovery: arm.limitRecovery,
           });
+        }
+
+        if (scenario === "same-folder") {
+          // A provider that switched its login in one folder continues on the same instance before the reset.
+          const candidate = (yield* projections.getLimitRecoveryCandidates({
+            now,
+            autoResume: false,
+            snooze: false,
+            switchAccounts: true,
+          })).find((thread) => thread.id === threadId)!;
+          const continuation = accountSwitchCommand(candidate, {
+            fromName: "Max 20x",
+            toName: "Team",
+          });
+          assert(continuation?.type === "message.dispatch");
+          yield* orchestrator.dispatch(continuation);
+          const after = yield* orchestrator.getThreadProjection(threadId);
+          const resumed = after.runs.at(-1)!;
+          assert.notEqual(resumed.id, limited.id);
+          assert.equal(resumed.status, "starting");
+          assert.equal(resumed.providerInstanceId, modelSelection.instanceId);
+          assert.equal(
+            after.messages.find((message) => message.id === continuation.messageId)?.notification
+              ?.summary,
+            "Max 20x ran out of usage. Continuing on Team.",
+          );
+          return;
         }
 
         // The limited account still reports room: only the failures rule it out.

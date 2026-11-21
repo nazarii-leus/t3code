@@ -119,15 +119,17 @@ export interface ProviderAccountsController {
   ) => Effect.Effect<ProviderAccountsSnapshot, ProviderAccountsError>;
   readonly checkUsage: (accountId: string | null) => Effect.Effect<ProviderAccountsSnapshot>;
   readonly resumeAutoSwitch: Effect.Effect<ProviderAccountsSnapshot>;
-  /** After a usage-limit failure on `failedAccountId`; returns the active account afterwards when it moved. */
+  /**
+   * After a usage-limit failure at `failedAt` (null: a turn about to start now). Returns the account
+   * names when the thread should continue now on another account, or undefined when none has room.
+   */
   readonly switchForLimit: (input: {
-    readonly failedAccountId: string | null;
+    readonly failedAt: string | null;
     readonly windowId: string | null;
     readonly windowLabel: string | null;
     readonly resetAt: string | null;
     readonly modelsInUse: ReadonlyArray<string>;
-  }) => Effect.Effect<string | undefined>;
-  readonly earliestReset: (windowId: string | null) => Effect.Effect<string | undefined>;
+  }) => Effect.Effect<{ readonly fromName: string; readonly toName: string } | undefined>;
   readonly activeId: Effect.Effect<string | null>;
 }
 
