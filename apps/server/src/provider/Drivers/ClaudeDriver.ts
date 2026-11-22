@@ -463,13 +463,21 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
     );
 
     const platform = yield* HostProcess.Platform;
-    const realFolder = yield* fileSystem
-      .realPath(configDir)
-      .pipe(Effect.orElseSucceed(() => configDir));
+    const realFolder = yield* fileSystem.realPath(configDir).pipe(
+      Effect.tapError((cause) =>
+        Effect.logWarning("Could not resolve the Claude folder; its own path names the store.", {
+          instanceId,
+          folder: configDir,
+          cause,
+        }),
+      ),
+      Effect.orElseSucceed(() => configDir),
+    );
     const storeDir = claudeAccountStoreDir(stateDir, realFolder);
     const logSetupFailure = (what: string) =>
       Effect.tapError((cause: unknown) =>
         Effect.logWarning(`Could not prepare the Claude account store: ${what}.`, {
+          instanceId,
           storeDir,
           cause,
         }),

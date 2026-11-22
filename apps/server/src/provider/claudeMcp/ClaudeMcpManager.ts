@@ -22,6 +22,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Scope from "effect/Scope";
+import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
@@ -40,6 +41,7 @@ const TOKEN_FLAG =
 const LONG_SECRET = /^[A-Za-z0-9+/_=.-]{24,}$/;
 const SECRET_TEXT = /bearer\s+\S|authorization\s*:|api[-_]?key\s*[:=]/i;
 const MASK = "••••";
+const decodeJsonText = Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown));
 
 /** Scheme, host and path, without query or userinfo; a token-like path segment is masked. */
 function redactMcpUrl(url: string): string {
@@ -144,7 +146,21 @@ export const makeClaudeMcpManager = Effect.fn("ClaudeMcpManager.make")(function*
   const storedClientSecret = Effect.fn("ClaudeMcpManager.storedClientSecret")(function* (
     name: string,
   ) {
-    const credentials = yield* readJson(path.join(options.folder, ".credentials.json"));
+    // An unreadable file is an error, not "no secret": an edit would otherwise lose the secret.
+    const file = path.join(options.folder, ".credentials.json");
+    const text = yield* fileSystem.readFileString(file).pipe(
+      Effect.catchReason("PlatformError", "NotFound", () => Effect.succeed("{}")),
+      Effect.mapError(() =>
+        failure("save", "Couldn't read Claude's sign-ins, so the server was not changed."),
+      ),
+    );
+    const credentials = asRecord(
+      yield* decodeJsonText(text).pipe(
+        Effect.mapError(() =>
+          failure("save", "Claude's sign-ins file is not JSON, so the server was not changed."),
+        ),
+      ),
+    );
     for (const [entryKey, entry] of Object.entries(asRecord(credentials.mcpOAuthClientConfig))) {
       const secret = asRecord(entry).clientSecret;
       if (entryKey.split("|")[0] === name && typeof secret === "string" && secret) return secret;
@@ -492,7 +508,9 @@ export const makeClaudeMcpManager = Effect.fn("ClaudeMcpManager.make")(function*
       args: redactMcpArgs(asStrings(config.args)),
       envNames: Object.keys(asRecord(config.env)),
       oauthClientId: typeof oauth.clientId === "string" ? oauth.clientId : null,
-      oauthHasClientSecret: (yield* storedClientSecret(entry.name)) !== undefined,
+      oauthHasClientSecret:
+        (yield* storedClientSecret(entry.name).pipe(Effect.orElseSucceed(() => undefined))) !==
+        undefined,
       oauthCallbackPort: typeof oauth.callbackPort === "number" ? oauth.callbackPort : null,
     } satisfies ProviderMcpServerConfigView;
   });
@@ -516,17 +534,18 @@ export const makeClaudeMcpManager = Effect.fn("ClaudeMcpManager.make")(function*
       : undefined;
     if (input.transport === "stdio") {
       const env = pairs("env", input.env);
-      // An argument sent back exactly as `get` masked it keeps the stored value at that place.
+      // Arguments sent back as `get` masked them keep the stored values, place for place, while
+      // their number is unchanged; `buildConfig`'s caller refuses a mask that is left over.
       const storedArgs = asStrings(previous?.args);
       const maskedArgs = redactMcpArgs(storedArgs);
+      const inputArgs = [...(input.args ?? [])].filter((arg) => arg.length > 0);
+      const sameShape = inputArgs.length === storedArgs.length;
       return {
         type: "stdio",
         command: input.command ?? "",
-        args: [...(input.args ?? [])]
-          .map((arg, at) =>
-            at < storedArgs.length && arg === maskedArgs[at] ? storedArgs[at]! : arg,
-          )
-          .filter((arg) => arg.length > 0),
+        args: inputArgs.map((arg, at) =>
+          sameShape && arg === maskedArgs[at] ? storedArgs[at]! : arg,
+        ),
         ...(Object.keys(env).length > 0 ? { env } : {}),
       };
     }
@@ -534,10 +553,28 @@ export const makeClaudeMcpManager = Effect.fn("ClaudeMcpManager.make")(function*
     const storedUrl = typeof previous?.url === "string" ? previous.url : undefined;
     return {
       type: input.transport,
-      url: storedUrl && input.url === redactMcpUrl(storedUrl) ? storedUrl : (input.url ?? ""),
+      url: restoreUrl(input.url ?? "", storedUrl),
       ...(Object.keys(headers).length > 0 ? { headers } : {}),
       ...(oauth && Object.keys(oauth).length > 0 ? { oauth } : {}),
     };
+  };
+
+  /**
+   * The URL `get` sent (masked path, no query or userinfo) becomes the stored one again; a URL edited
+   * on the same origin keeps the stored query and userinfo it could not show.
+   */
+  const restoreUrl = (input: string, stored: string | undefined) => {
+    if (!stored) return input;
+    if (input === redactMcpUrl(stored)) return stored;
+    const next = URL.parse(input);
+    const before = URL.parse(stored);
+    if (!next || !before || next.origin !== before.origin || next.search || next.username) {
+      return input;
+    }
+    next.search = before.search;
+    next.username = before.username;
+    next.password = before.password;
+    return next.toString();
   };
 
   const addJson = (
@@ -601,6 +638,13 @@ export const makeClaudeMcpManager = Effect.fn("ClaudeMcpManager.make")(function*
           if (mode === "add" && previous)
             return yield* failure("save", `${input.name} already exists here.`);
           const config = buildConfig(input, previous?.config);
+          const built = config as Json;
+          if (asStrings(built.args).includes(MASK) || String(built.url ?? "").includes(MASK)) {
+            return yield* failure(
+              "save",
+              "A hidden value changed place. Enter it again to save the server.",
+            );
+          }
           // `claude mcp remove` deletes the stored client secret, so an edit passes it back.
           const keptSecret =
             mode === "replace" && previous && !input.oauth?.clientSecret
@@ -733,7 +777,19 @@ export const makeClaudeMcpManager = Effect.fn("ClaudeMcpManager.make")(function*
    * is listed. It runs in the background, so the sign-in flow ends when Claude is done.
    */
   const afterSignIn = (key: string) =>
-    Effect.forkIn(afterSignInNow(key).pipe(Effect.ignore), scope).pipe(Effect.asVoid);
+    Effect.forkIn(
+      afterSignInNow(key).pipe(
+        Effect.tapCause((cause) =>
+          Effect.logWarning("Could not refresh an MCP server after its sign-in.", {
+            key,
+            instanceId: options.instanceId,
+            cause,
+          }),
+        ),
+        Effect.ignore,
+      ),
+      scope,
+    ).pipe(Effect.asVoid);
   const afterSignInNow = Effect.fn("ClaudeMcpManager.afterSignIn")(function* (key: string) {
     const target = signInTarget(key);
     if (!target) return;

@@ -141,18 +141,21 @@ it.layer(NodeServices.layer)("ClaudeAccountStore", (it) => {
       }),
     );
 
-    it.effect("a switch that fails part way is put right at once", () =>
-      Effect.gen(function* () {
-        const t = yield* setup();
-        // The outgoing login is saved, then the folder can't be written.
-        yield* t.fileSystem.chmod(t.folder, 0o500);
-        const outcome = yield* t.store.switchTo(B_ID).pipe(Effect.result);
-        yield* t.fileSystem.chmod(t.folder, 0o700);
-        expect(outcome._tag).toBe("Failure");
-        expect((yield* t.folderCredentials)?.claudeAiOauth).toEqual(A.claudeAiOauth);
-        expect(yield* t.refreshTokens).toEqual(["rt-a", "rt-b"]);
-        expect(yield* t.fileSystem.exists(t.path.join(t.storeDir, "journal.json"))).toBe(false);
-      }),
+    // A read-only folder stops only a non-root user; as root the write would go through.
+    it.effect.skipIf(process.getuid?.() === 0)(
+      "a switch that fails part way is put right at once",
+      () =>
+        Effect.gen(function* () {
+          const t = yield* setup();
+          // The outgoing login is saved, then the folder can't be written.
+          yield* t.fileSystem.chmod(t.folder, 0o500);
+          const outcome = yield* t.store.switchTo(B_ID).pipe(Effect.result);
+          yield* t.fileSystem.chmod(t.folder, 0o700);
+          expect(outcome._tag).toBe("Failure");
+          expect((yield* t.folderCredentials)?.claudeAiOauth).toEqual(A.claudeAiOauth);
+          expect(yield* t.refreshTokens).toEqual(["rt-a", "rt-b"]);
+          expect(yield* t.fileSystem.exists(t.path.join(t.storeDir, "journal.json"))).toBe(false);
+        }),
     );
 
     it.effect("a switch to the account already in use does nothing", () =>

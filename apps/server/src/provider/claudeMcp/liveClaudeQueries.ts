@@ -36,30 +36,30 @@ export async function reconnectLiveClaudeQueries(
   key: string,
   serverName: string,
 ): Promise<{ readonly reconnected: number; readonly failed: number }> {
-  const queries = live.get(key);
-  let reconnected = 0;
-  let failed = 0;
-  for (const query of queries ?? []) {
-    const timeout = new AbortController();
-    try {
-      await Promise.race([
-        query.reconnectMcpServer(serverName),
-        NodeTimersPromises.setTimeout(RECONNECT_TIMEOUT_MS, undefined, {
-          signal: timeout.signal,
-        }).then(
-          () => {
-            throw new Error("timed out");
-          },
-          // Aborted once the reconnect settled.
-          () => undefined,
-        ),
-      ]);
-      reconnected++;
-    } catch {
-      failed++;
-    } finally {
-      timeout.abort();
-    }
-  }
+  const queries = [...(live.get(key) ?? [])];
+  // All at once, so a stuck session delays the others by one timeout at most.
+  const results = await Promise.allSettled(
+    queries.map(async (query) => {
+      const timeout = new AbortController();
+      try {
+        await Promise.race([
+          query.reconnectMcpServer(serverName),
+          NodeTimersPromises.setTimeout(RECONNECT_TIMEOUT_MS, undefined, {
+            signal: timeout.signal,
+          }).then(
+            () => {
+              throw new Error("timed out");
+            },
+            // Aborted once the reconnect settled.
+            () => undefined,
+          ),
+        ]);
+      } finally {
+        timeout.abort();
+      }
+    }),
+  );
+  const reconnected = results.filter((result) => result.status === "fulfilled").length;
+  const failed = results.length - reconnected;
   return { reconnected, failed };
 }

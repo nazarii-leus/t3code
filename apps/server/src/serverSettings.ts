@@ -945,7 +945,8 @@ const make = Effect.gen(function* () {
           homeDir: yield* HostProcess.HomeDirectory,
           claudeConfigDir: (yield* HostProcess.Environment).CLAUDE_CONFIG_DIR,
         }).pipe(
-          Effect.catch((cause) =>
+          // Also a defect: T3 starts with the folders as they were rather than not at all.
+          Effect.catchCause((cause) =>
             Effect.logWarning("Could not fold the Claude account folders.", { cause }).pipe(
               Effect.as(sourceControlMigration.settings),
             ),

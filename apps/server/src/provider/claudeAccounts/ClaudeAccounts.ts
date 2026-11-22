@@ -271,7 +271,15 @@ export const makeClaudeAccounts = Effect.fn("ClaudeAccounts.make")(function* (
     Effect.catch((cause) =>
       Effect.gen(function* () {
         const aside = `${indexFile}.unreadable-${yield* nowMs}`;
-        yield* fileSystem.rename(indexFile, aside).pipe(Effect.ignore);
+        yield* fileSystem.rename(indexFile, aside).pipe(
+          Effect.tapError((renameCause) =>
+            Effect.logWarning("Could not set the unreadable account index aside.", {
+              indexFile,
+              cause: renameCause,
+            }),
+          ),
+          Effect.ignore,
+        );
         yield* Effect.logWarning("The Claude account index was unreadable; it was set aside.", {
           aside,
           cause,
@@ -295,13 +303,22 @@ export const makeClaudeAccounts = Effect.fn("ClaudeAccounts.make")(function* (
         return next;
       }),
     );
-  /** For writes nobody waits on: a failure is logged, the in-memory list stays as it was. */
+  /**
+   * For bookkeeping nobody waits on (history, limits, the hourly cap): memory always takes the change,
+   * so the cap and the limits keep working this run; a failed write is logged.
+   */
   const updateIndexQuietly = (update: (current: StoreIndex) => StoreIndex) =>
-    updateIndex(update).pipe(
-      Effect.tapError((cause) =>
-        Effect.logWarning("Could not write the Claude account index.", { indexFile, cause }),
-      ),
-      Effect.ignore,
+    indexLock.withPermits(1)(
+      Effect.gen(function* () {
+        const next = update(yield* Ref.get(index));
+        yield* Ref.set(index, next);
+        yield* store.writeJson(indexFile, next as unknown as Record<string, unknown>).pipe(
+          Effect.tapError((cause) =>
+            Effect.logWarning("Could not write the Claude account index.", { indexFile, cause }),
+          ),
+          Effect.ignore,
+        );
+      }),
     );
   const probes = yield* Ref.make<ReadonlyMap<string, ProbeState>>(new Map());
   const runtime = yield* Ref.make<{
@@ -311,6 +328,9 @@ export const makeClaudeAccounts = Effect.fn("ClaudeAccounts.make")(function* (
   const switchLock = yield* Semaphore.make(1);
   const readProfile = (file: string) =>
     readJsonFile(file).pipe(
+      Effect.tapError((cause) =>
+        Effect.logWarning("Could not read a Claude account profile.", { file, cause }),
+      ),
       Effect.orElseSucceed((): Record<string, unknown> => ({})),
       Effect.map((json) => asRecord(json.oauthAccount)),
     );
@@ -607,10 +627,11 @@ export const makeClaudeAccounts = Effect.fn("ClaudeAccounts.make")(function* (
     runSwitch(targetId, reason, window, initiator).pipe(
       Effect.onInterrupt(() =>
         Ref.update(runtime, (current) => ({ ...current, switching: null })).pipe(
-          Effect.andThen(Ref.set(usageQuiet, false)),
           Effect.andThen(publish),
         ),
       ),
+      // However the switch ends (also a defect), usage events count again.
+      Effect.ensuring(Ref.set(usageQuiet, false)),
     );
   const runSwitch = Effect.fn("ClaudeAccounts.switchNow")(function* (
     targetId: string,
@@ -634,41 +655,48 @@ export const makeClaudeAccounts = Effect.fn("ClaudeAccounts.make")(function* (
       const target = permitOf(targetId).withPermits(1)(effect);
       return fromLogin ? permitOf(fromLogin.accountId).withPermits(1)(target) : target;
     };
-    // Once the files start to move, the switch and its history entry finish even if the caller leaves.
-    const outcome = yield* permits(store.switchTo(targetId)).pipe(
-      Effect.uninterruptible,
-      Effect.result,
+    // Once the files start to move, the switch, its history entry and the flags finish even if the
+    // caller leaves.
+    const switched = yield* Effect.uninterruptible(
+      Effect.gen(function* () {
+        const outcome = yield* permits(store.switchTo(targetId)).pipe(Effect.result);
+        const at = yield* nowIso;
+        if (outcome._tag === "Failure") {
+          yield* Ref.set(runtime, {
+            switching: null,
+            lastError: { at, message: outcome.failure.detail, toId: targetId },
+          });
+          return { _tag: "Failure" as const, detail: outcome.failure.detail };
+        }
+        const entry: ProviderAccountSwitchEntry = {
+          at,
+          fromId: fromLogin?.accountId ?? null,
+          toId: targetId,
+          fromName: nameOf(yield* Ref.get(index), fromLogin?.accountId),
+          toName: nameOf(yield* Ref.get(index), targetId) ?? "Claude account",
+          reason,
+          window,
+          initiator,
+        };
+        yield* updateIndexQuietly((latest) => ({
+          ...latest,
+          history: [entry, ...latest.history].slice(0, HISTORY_LIMIT),
+        }));
+        yield* Ref.set(lastActive, targetId);
+        yield* Ref.set(runtime, { switching: null, lastError: null });
+        return { _tag: "Success" as const, entry };
+      }),
     );
-    const at = yield* nowIso;
-    if (outcome._tag === "Failure") {
-      yield* Ref.set(runtime, {
-        switching: null,
-        lastError: { at, message: outcome.failure.detail, toId: targetId },
-      });
-      yield* Ref.set(usageQuiet, false);
+    if (switched._tag === "Failure") {
       yield* publish;
-      return yield* failure("use", outcome.failure.detail);
+      return yield* failure("use", switched.detail);
     }
-    const entry: ProviderAccountSwitchEntry = {
-      at,
-      fromId: fromLogin?.accountId ?? null,
-      toId: targetId,
-      fromName: nameOf(yield* Ref.get(index), fromLogin?.accountId),
-      toName: nameOf(yield* Ref.get(index), targetId) ?? "Claude account",
-      reason,
-      window,
-      initiator,
-    };
-    yield* updateIndexQuietly((latest) => ({
-      ...latest,
-      history: [entry, ...latest.history].slice(0, HISTORY_LIMIT),
-    })).pipe(Effect.uninterruptible);
-    yield* Ref.set(lastActive, targetId);
-    yield* Ref.set(runtime, { switching: null, lastError: null });
+    const entry = switched.entry;
     // The account that just left is checked at once, so its row shows fresh usage.
     if (fromLogin)
       yield* setProbe(fromLogin.accountId, (previous) => ({ ...previous, nextProbeAt: 0 }));
-    yield* options.refreshActive.pipe(Effect.ignore, Effect.ensuring(Ref.set(usageQuiet, false)));
+    // Usage events count again once the new account's own usage was read.
+    yield* options.refreshActive.pipe(Effect.timeout("30 seconds"), Effect.ignore);
     yield* publish;
     yield* dueProbes().pipe(Effect.ignore);
     return entry;
@@ -851,6 +879,14 @@ export const makeClaudeAccounts = Effect.fn("ClaudeAccounts.make")(function* (
           yield* publish;
           return undefined;
         }
+        // Every attempt counts toward the hourly cap, so a target that keeps failing pauses switching.
+        yield* updateIndexQuietly((latest) => ({
+          ...latest,
+          autoSwitchLog: [
+            ...latest.autoSwitchLog.filter((at) => now - Date.parse(at) < HOUR_MS),
+            isoOf(now),
+          ],
+        }));
         const switched = yield* switchNow(target.id, "usage_limit", input.windowLabel, {
           clientId: null,
           kind: "server",
@@ -863,14 +899,6 @@ export const makeClaudeAccounts = Effect.fn("ClaudeAccounts.make")(function* (
           });
           return undefined;
         }
-        // Only switches that happened count toward the hourly cap.
-        yield* updateIndexQuietly((latest) => ({
-          ...latest,
-          autoSwitchLog: [
-            ...latest.autoSwitchLog.filter((at) => now - Date.parse(at) < HOUR_MS),
-            isoOf(now),
-          ],
-        }));
         return { fromName: nameOfId(failedId), toName: target.name };
       }),
     );
@@ -899,21 +927,31 @@ export const makeClaudeAccounts = Effect.fn("ClaudeAccounts.make")(function* (
       .pipe(Effect.mapError((error) => failure("signIn", error.detail)));
     if (wasActive !== undefined && wasActive !== login.accountId) {
       // A stored login keeps its profile beside it, so its row has an email and organization.
-      const profile = yield* readJsonFile(path.join(scratchDir, ".claude.json")).pipe(
+      const profileFile = path.join(scratchDir, ".claude.json");
+      const profile = yield* readJsonFile(profileFile).pipe(
+        Effect.tapError((cause) =>
+          Effect.logWarning("Could not read the profile of a new sign-in.", {
+            accountId: login.accountId,
+            file: profileFile,
+            cause,
+          }),
+        ),
         Effect.orElseSucceed((): Record<string, unknown> => ({})),
       );
-      yield* store
-        .writeJson(path.join(store.accountDir(login.accountId), ".claude.json"), {
-          hasCompletedOnboarding: true,
-          oauthAccount: profile.oauthAccount,
-          userID: profile.userID,
-        })
-        .pipe(
-          Effect.tapError((cause) =>
-            Effect.logWarning("Could not save a stored account's profile.", { cause }),
-          ),
-          Effect.ignore,
-        );
+      // Without a profile the row shows no email; nothing is written that would hide that.
+      if (profile.oauthAccount !== undefined)
+        yield* store
+          .writeJson(path.join(store.accountDir(login.accountId), ".claude.json"), {
+            hasCompletedOnboarding: true,
+            oauthAccount: profile.oauthAccount,
+            userID: profile.userID,
+          })
+          .pipe(
+            Effect.tapError((cause) =>
+              Effect.logWarning("Could not save a stored account's profile.", { cause }),
+            ),
+            Effect.ignore,
+          );
     }
     if (wasActive === undefined) {
       // The folder was empty, so this sign-in is now the active account.
