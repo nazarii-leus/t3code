@@ -918,28 +918,35 @@ const make = Effect.gen(function* () {
       ? migrateLegacySourceControlSettings(folded, legacySourceControl)
       : { settings: folded, secretMoves: [] };
     // Claude account folders become accounts of the one Claude folder (kept, aliased, logins moved).
-    const accountsFolded = settingsFileTrusted
+    // Only on Linux, where switching works; the old settings are kept aside first, or nothing moves.
+    const hasClaudeAccountInstances = Object.entries(
+      sourceControlMigration.settings.providerInstances,
+    ).some(([id, entry]) => entry.driver === "claudeAgent" && id !== "claudeAgent");
+    const backupPath = `${settingsPath}.bak-claude-accounts`;
+    const backedUp =
+      settingsFileTrusted && hasClaudeAccountInstances && (yield* HostProcess.Platform) === "linux"
+        ? yield* fs.exists(backupPath).pipe(
+            Effect.flatMap((there) =>
+              there
+                ? Effect.succeed(true)
+                : fs.copyFile(settingsPath, backupPath).pipe(Effect.as(true)),
+            ),
+            Effect.catch((cause) =>
+              Effect.logWarning(
+                "Could not back up the settings; the Claude account folders are not folded.",
+                { backupPath, cause },
+              ).pipe(Effect.as(false)),
+            ),
+          )
+        : false;
+    const accountsFolded = backedUp
       ? yield* migrateClaudeAccountFolders(sourceControlMigration.settings, {
           stateDir,
           homeDir: yield* HostProcess.HomeDirectory,
           claudeConfigDir: (yield* HostProcess.Environment).CLAUDE_CONFIG_DIR,
         }).pipe(
-          Effect.tap((next) =>
-            next === sourceControlMigration.settings
-              ? Effect.void
-              : fs
-                  .copyFile(settingsPath, `${settingsPath}.bak-claude-accounts`)
-                  .pipe(
-                    Effect.when(
-                      fs
-                        .exists(`${settingsPath}.bak-claude-accounts`)
-                        .pipe(Effect.map((there) => !there)),
-                    ),
-                    Effect.ignore,
-                  ),
-          ),
-          Effect.catchCause((cause) =>
-            Effect.logWarning("Could not fold the Claude account folders.", cause).pipe(
+          Effect.catch((cause) =>
+            Effect.logWarning("Could not fold the Claude account folders.", { cause }).pipe(
               Effect.as(sourceControlMigration.settings),
             ),
           ),

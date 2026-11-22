@@ -129,5 +129,78 @@ it.layer(NodeServices.layer)("migrateClaudeAccountFolders", (it) => {
           expect(yield* migrateClaudeAccountFolders(next, options)).toBe(next);
         }),
     );
+
+    it.effect(
+      "keeps what it can't move, folds only into the default folder, keeps threads runnable",
+      () =>
+        Effect.gen(function* () {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const home = yield* fileSystem.makeTempDirectoryScoped({
+            prefix: "t3-claude-migration-",
+          });
+          const stateDir = path.join(home, "state");
+          const main = path.join(home, ".claude");
+          const other = path.join(home, "other-claude");
+          yield* fileSystem.makeDirectory(path.join(main, "projects"), { recursive: true });
+          yield* fileSystem.makeDirectory(other, { recursive: true });
+          yield* fileSystem.writeFileString(
+            path.join(main, ".credentials.json"),
+            JSON.stringify(login("a", "oa", "rt-a")),
+          );
+          const broken = path.join(home, ".claude-accounts", "broken");
+          yield* fileSystem.makeDirectory(broken, { recursive: true });
+          yield* fileSystem.symlink(path.join(main, "projects"), path.join(broken, "projects"));
+          // A login file that exists but can't be read: the move fails and nothing is lost.
+          yield* fileSystem.writeFileString(path.join(broken, ".credentials.json"), "{not json");
+          const team = path.join(home, ".claude-accounts", "team");
+          yield* fileSystem.makeDirectory(team, { recursive: true });
+          yield* fileSystem.symlink(path.join(main, "projects"), path.join(team, "projects"));
+          yield* fileSystem.writeFileString(
+            path.join(team, ".credentials.json"),
+            JSON.stringify(login("b", "ob", "rt-b")),
+          );
+          const settings = {
+            ...DEFAULT_SERVER_SETTINGS,
+            providerInstances: {
+              [ProviderInstanceId.make("claudeAgent")]: {
+                driver: "claudeAgent",
+                enabled: false,
+                config: {},
+              },
+              [ProviderInstanceId.make("claude_broken")]: {
+                driver: "claudeAgent",
+                config: { homePath: broken },
+              },
+              [ProviderInstanceId.make("claude_team")]: {
+                driver: "claudeAgent",
+                config: { homePath: team },
+              },
+              // A shadow home of another folder belongs to that folder, not to ~/.claude.
+              [ProviderInstanceId.make("claude_elsewhere")]: {
+                driver: "claudeAgent",
+                config: { homePath: other, shadowHomePath: path.join(home, "shadow") },
+              },
+            },
+          } as unknown as ServerSettings;
+          const next = yield* migrateClaudeAccountFolders(settings, {
+            stateDir,
+            homeDir: home,
+            claudeConfigDir: undefined,
+          });
+          expect(Object.keys(next.providerInstances).toSorted()).toEqual([
+            "claudeAgent",
+            "claude_broken",
+            "claude_elsewhere",
+          ]);
+          expect(next.providerInstanceAliases).toEqual({ claude_team: "claudeAgent" });
+          expect(next.providerInstances[ProviderInstanceId.make("claudeAgent")]?.enabled).toBe(
+            true,
+          );
+          expect(yield* fileSystem.readFileString(path.join(broken, ".credentials.json"))).toBe(
+            "{not json",
+          );
+        }),
+    );
   });
 });

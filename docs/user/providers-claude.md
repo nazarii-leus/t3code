@@ -34,9 +34,10 @@ Keychain, and on Windows T3 Code can't sign Claude in yet, so there T3 Code mana
 account and the list shows why. On mobile, **Settings > Providers > Claude** offers the same list.
 
 Earlier versions of this fork kept each extra account in its own folder under `~/.claude-accounts`.
-On the first start of this version, each such account becomes an entry of the main Claude
+On the first start of this version on Linux, each such account becomes an entry of the main Claude
 provider's list, keeping its name; its old provider id keeps working for existing threads, and the
-previous settings are saved next to `settings.json` as `settings.json.bak-claude-accounts`.
+previous settings are saved next to `settings.json` as `settings.json.bak-claude-accounts`. An
+account whose login can't be moved at that moment stays a separate provider until the next start.
 
 ## MCP servers
 
@@ -77,7 +78,7 @@ leaving `HOME` and the system keychain location intact. Use the same variable fo
 command. Setting `HOME` instead can put credentials where this provider will not find them. A
 separate folder has its own accounts and conversations: a thread that moves to it starts a new
 session and receives a handoff of the recent conversation. Two Claude providers can't use the
-same folder.
+same folder: the second one says so and signs nothing in.
 
 For presets that differ only in API keys or endpoints, use the instance's
 **Environment variables**. Variable assignments do not belong in **Launch arguments**.

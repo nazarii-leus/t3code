@@ -1,11 +1,17 @@
 import { switchConfirmLines } from "@t3tools/client-runtime/provider-accounts";
-import type { EnvironmentId, ProviderAccount, ServerProvider } from "@t3tools/contracts";
+import {
+  resolveProviderInstanceAlias,
+  type EnvironmentId,
+  type ProviderAccount,
+  type ServerProvider,
+} from "@t3tools/contracts";
 import { T, useGT, useMessages } from "gt-react";
 import { createContext, useState } from "react";
 
 import { useNowMinute } from "../../../hooks/useNowMinute";
 import { randomUUID } from "../../../lib/utils";
 import { useThreadShells } from "../../../state/entities";
+import { appAtomRegistry } from "../../../rpc/atomRegistry";
 import { serverEnvironment } from "../../../state/server";
 import { useAtomCommand } from "../../../state/use-atom-command";
 import {
@@ -69,7 +75,11 @@ export function useAccountSwitch() {
     shells.filter(
       (shell) =>
         shell.environmentId === environmentId &&
-        shell.providerInstanceId === instanceId &&
+        // Threads of a folded account instance run here too.
+        resolveProviderInstanceAlias(
+          appAtomRegistry.get(serverEnvironment.settingsValueAtom(environmentId)),
+          shell.providerInstanceId,
+        ) === instanceId &&
         WORKING.has(shell.latestRun?.status ?? ""),
     );
   const [confirm, setConfirm] = useState<{

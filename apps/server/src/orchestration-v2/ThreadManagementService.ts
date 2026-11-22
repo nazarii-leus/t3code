@@ -38,6 +38,7 @@ import {
   ProviderInstanceId,
   type ProviderSessionId,
   resolveProjectProviderInstanceEnabled,
+  resolveProviderInstanceAlias,
   RunId,
   type ScheduledTaskId,
   ThreadId,
@@ -848,16 +849,19 @@ const make = Effect.gen(function* () {
     const selection = command.modelSelection ?? thread.modelSelection;
     const providers = yield* providerRegistry.value.getProviders;
     const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
-    const provider = providers.find((candidate) => candidate.instanceId === selection.instanceId);
+    // A thread of a folded account instance runs on the instance its id now names.
+    const instanceId = resolveProviderInstanceAlias(settings, selection.instanceId);
+    const provider = providers.find((candidate) => candidate.instanceId === instanceId);
     // A provider that switches accounts in one folder (Claude) moves its login, not the thread.
     if (provider?.accounts?.supported === true) {
       const exhausted = exhaustedUsageWindow(provider, nowMs, selection.model);
       const accounts = Option.isSome(providerInstances)
-        ? (yield* providerInstances.value.getInstance(selection.instanceId))?.accounts
+        ? (yield* providerInstances.value.getInstance(instanceId))?.accounts
         : undefined;
       if (exhausted && accounts) {
         const names = yield* accounts.switchForLimit({
-          failedAt: null,
+          // The reading's time: a switch made since (another turn waited for it) is then seen.
+          failedAt: DateTime.formatIso(DateTime.makeUnsafe(nowMs)),
           windowId: exhausted.id,
           windowLabel: exhausted.label,
           resetAt: exhausted.resetsAt ?? null,

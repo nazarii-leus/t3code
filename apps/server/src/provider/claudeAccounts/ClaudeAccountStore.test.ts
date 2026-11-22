@@ -6,7 +6,7 @@ import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 
-import { makeClaudeAccountStore, type ClaudeLocks } from "./ClaudeAccountStore.ts";
+import { claudeLocks, makeClaudeAccountStore, type ClaudeLocks } from "./ClaudeAccountStore.ts";
 
 const login = (account: string, org: string, refreshToken: string) => ({
   claudeAiOauth: {
@@ -120,6 +120,58 @@ it.layer(NodeServices.layer)("ClaudeAccountStore", (it) => {
         yield* Deferred.succeed(release, undefined);
         yield* Fiber.join(fiber);
         expect((yield* t.folderCredentials)?.claudeAiOauth).toEqual(B.claudeAiOauth);
+      }),
+    );
+  });
+
+  describe("the switch's edges", () => {
+    it.effect("waits while Claude holds its refresh lock file", () =>
+      Effect.gen(function* () {
+        const t = yield* setup(claudeLocks);
+        // proper-lockfile marks a held lock with a fresh directory.
+        const held = t.path.join(t.folder, ".oauth_refresh.lock");
+        yield* t.fileSystem.makeDirectory(held);
+        const fiber = yield* Effect.forkChild(t.store.switchTo(B_ID));
+        yield* Effect.yieldNow;
+        expect((yield* t.folderCredentials)?.claudeAiOauth).toEqual(A.claudeAiOauth);
+        yield* t.fileSystem.remove(held, { recursive: true });
+        yield* Fiber.join(fiber);
+        expect((yield* t.folderCredentials)?.claudeAiOauth).toEqual(B.claudeAiOauth);
+        expect(yield* t.refreshTokens).toEqual(["rt-a", "rt-b"]);
+      }),
+    );
+
+    it.effect("a switch that fails part way is put right at once", () =>
+      Effect.gen(function* () {
+        const t = yield* setup();
+        // The outgoing login is saved, then the folder can't be written.
+        yield* t.fileSystem.chmod(t.folder, 0o500);
+        const outcome = yield* t.store.switchTo(B_ID).pipe(Effect.result);
+        yield* t.fileSystem.chmod(t.folder, 0o700);
+        expect(outcome._tag).toBe("Failure");
+        expect((yield* t.folderCredentials)?.claudeAiOauth).toEqual(A.claudeAiOauth);
+        expect(yield* t.refreshTokens).toEqual(["rt-a", "rt-b"]);
+        expect(yield* t.fileSystem.exists(t.path.join(t.storeDir, "journal.json"))).toBe(false);
+      }),
+    );
+
+    it.effect("a switch to the account already in use does nothing", () =>
+      Effect.gen(function* () {
+        const t = yield* setup();
+        yield* t.store.switchTo(A_ID);
+        expect((yield* t.folderCredentials)?.claudeAiOauth).toEqual(A.claudeAiOauth);
+        expect(yield* t.refreshTokens).toEqual(["rt-a", "rt-b"]);
+      }),
+    );
+
+    it.effect("a new sign-in is stored without touching the active login", () =>
+      Effect.gen(function* () {
+        const t = yield* setup();
+        const C = login("acct-c", "org-c", "rt-c");
+        yield* t.store.storeLogin(C);
+        expect((yield* t.folderCredentials)?.claudeAiOauth).toEqual(A.claudeAiOauth);
+        expect((yield* t.storeCredentials("acct-c.org-c"))?.claudeAiOauth).toEqual(C.claudeAiOauth);
+        expect(yield* t.refreshTokens).toEqual(["rt-a", "rt-b"]);
       }),
     );
   });

@@ -2,6 +2,7 @@ import {
   CommandId,
   MessageId,
   PROVIDER_DISPLAY_NAMES,
+  resolveProviderInstanceAlias,
   type OrchestrationV2Command,
   type ProviderDriverKind,
   type ProviderInstanceId,
@@ -211,7 +212,8 @@ const makeSweep = Effect.gen(function* () {
     preferences: ServerSettingsValue,
     nowMs: number,
   ) {
-    const instanceId = thread.modelSelection.instanceId;
+    // A thread of a folded account instance runs on the instance its id now names.
+    const instanceId = resolveProviderInstanceAlias(preferences, thread.modelSelection.instanceId);
     if (
       Option.isNone(instances) ||
       providers.find((provider) => provider.instanceId === instanceId)?.accounts?.supported !==

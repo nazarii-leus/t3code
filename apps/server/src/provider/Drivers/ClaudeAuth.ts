@@ -125,6 +125,8 @@ export const makeClaudeAuth = Effect.fn("ClaudeAuth.make")(function* (options: {
   readonly cwd: string;
   /** Present where accounts switch in one folder; adds the account sign-in methods. */
   readonly accounts?: ClaudeAccounts;
+  /** Another provider owns this Claude folder's account list; this one signs nothing in. */
+  readonly folderTaken?: boolean;
   /** MCP sign-ins by server key (`mcp:<key>`). */
   readonly mcp?: ClaudeMcpManager;
   readonly refresh: Effect.Effect<ServerProvider>;
@@ -302,7 +304,8 @@ export const makeClaudeAuth = Effect.fn("ClaudeAuth.make")(function* (options: {
       return yield* accounts
         .adoptSignIn(scratch, expectedId)
         .pipe(Effect.mapError((error) => failure("start", error.detail)));
-    }).pipe(Effect.ensuring(accounts.removeScratchDir(scratch)));
+      // The login process is stopped before its scratch folder goes.
+    }).pipe(Effect.scoped, Effect.ensuring(accounts.removeScratchDir(scratch)));
   });
 
   return yield* ProviderAuthFlow.make({
@@ -330,12 +333,24 @@ export const makeClaudeAuth = Effect.fn("ClaudeAuth.make")(function* (options: {
     },
     authenticate: Effect.fn("ClaudeAuth.authenticate")(
       function* (methodId, context) {
-        if (methodId === PROVIDER_ACCOUNT_ADD_METHOD_ID) return yield* signInAccount(context, null);
-        if (methodId.startsWith(PROVIDER_ACCOUNT_RENEW_METHOD_PREFIX)) {
-          return yield* signInAccount(
-            context,
-            methodId.slice(PROVIDER_ACCOUNT_RENEW_METHOD_PREFIX.length),
+        if (options.folderTaken && !methodId.startsWith(MCP_METHOD_PREFIX)) {
+          return yield* failure(
+            "start",
+            "Another Claude provider already uses this folder. Sign in from that provider.",
           );
+        }
+        // Where accounts can't switch (macOS keychain, Windows), adding one is the plain sign-in.
+        const switching = accounts ? (yield* accounts.snapshot).supported : false;
+        if (methodId === PROVIDER_ACCOUNT_ADD_METHOD_ID && switching) {
+          return yield* signInAccount(context, null);
+        }
+        if (methodId.startsWith(PROVIDER_ACCOUNT_RENEW_METHOD_PREFIX)) {
+          const accountId = methodId.slice(PROVIDER_ACCOUNT_RENEW_METHOD_PREFIX.length);
+          if (!accountId) return yield* failure("start", "Choose the account to sign in again.");
+          return yield* signInAccount(context, accountId);
+        }
+        if (isProviderAccountMethodId(methodId) && methodId !== PROVIDER_ACCOUNT_ADD_METHOD_ID) {
+          return yield* failure("start", "This sign-in is no longer offered. Try again.");
         }
         if (methodId.startsWith(MCP_METHOD_PREFIX)) {
           const key = methodId.slice(MCP_METHOD_PREFIX.length);
@@ -346,6 +361,10 @@ export const makeClaudeAuth = Effect.fn("ClaudeAuth.make")(function* (options: {
           );
           yield* options.mcp!.afterSignIn(key);
           return `Signed in to ${target.name}.`;
+        }
+        // A signed-in folder with an account list keeps its login: the new one is added beside it.
+        if (switching && accounts && (yield* accounts.activeId) !== null) {
+          return yield* signInAccount(context, null);
         }
         yield* signInThroughBrowser(context, (environment) =>
           spawnProcess(["auth", "login", "--claudeai"], environment),

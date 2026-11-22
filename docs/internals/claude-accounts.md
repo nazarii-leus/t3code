@@ -72,15 +72,18 @@ account field.
 ## Migration from account folders
 
 Earlier versions kept each extra account in its own Claude folder whose `projects` linked into the
-main folder's (or in a shadow home). At start,
+main folder's (or in a shadow home of the main folder). At start on Linux, after a backup of the
+settings,
 [`migrateClaudeAccountFolders`](../../apps/server/src/provider/claudeAccounts/ClaudeAccountsMigration.ts)
 moves each such login into the main folder's store under the locks, keeps the instance's display
 name and enabled flag as the account's name and automatic-switch flag, removes the instance, and
 records `providerInstanceAliases` from its id to the main instance. The
 [registry](../../apps/server/src/provider/ProviderInstanceRegistry.ts) resolves aliases, so stored
 threads keep running; clients map them with `resolveProviderInstanceAlias`. The previous settings
-are kept as `settings.json.bak-claude-accounts`. A Claude instance with its own unlinked folder
-stays a separate provider with its own list.
+are kept as `settings.json.bak-claude-accounts`. A login that can't be moved (Claude holds its lock,
+the file can't be read) leaves its instance as it is for the next start. A Claude instance with its
+own unlinked folder stays a separate provider with its own list; a second instance on a folder that
+already has a provider gets no list and signs nothing in.
 
 ## MCP servers
 

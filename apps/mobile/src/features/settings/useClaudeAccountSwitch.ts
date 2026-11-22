@@ -4,13 +4,19 @@ import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
-import type { EnvironmentId, ProviderAccount, ServerProvider } from "@t3tools/contracts";
+import {
+  resolveProviderInstanceAlias,
+  type EnvironmentId,
+  type ProviderAccount,
+  type ServerProvider,
+} from "@t3tools/contracts";
 import { useGT } from "gt-react-native";
 
 import * as Dialog from "../../components/ui/Dialog";
 import { m } from "../../i18n/messages";
 import { uuidv4 } from "../../lib/uuid";
 import { useThreadShells } from "../../state/entities";
+import { appAtomRegistry } from "../../state/atom-registry";
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
 
@@ -43,7 +49,11 @@ export function useClaudeAccountSwitch() {
     shells.filter(
       (shell) =>
         shell.environmentId === environmentId &&
-        shell.providerInstanceId === instanceId &&
+        // Threads of a folded account instance run here too.
+        resolveProviderInstanceAlias(
+          appAtomRegistry.get(serverEnvironment.settingsValueAtom(environmentId)),
+          shell.providerInstanceId,
+        ) === instanceId &&
         WORKING.has(shell.latestRun?.status ?? ""),
     );
 

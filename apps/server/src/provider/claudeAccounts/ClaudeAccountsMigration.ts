@@ -44,10 +44,7 @@ export const migrateClaudeAccountFolders = Effect.fn("migrateClaudeAccountFolder
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const instances = settings.providerInstances;
-  const folderOf = (config: Json) => {
-    const home = text(config.shadowHomePath) || text(config.homePath);
-    return home ? path.resolve(expandHomePath(home, options.homeDir)) : undefined;
-  };
+  const resolveHome = (home: string) => path.resolve(expandHomePath(home, options.homeDir));
   const realPath = (file: string) =>
     fileSystem.realPath(file).pipe(Effect.orElseSucceed(() => file));
   const readJson = (file: string) =>
@@ -56,18 +53,39 @@ export const migrateClaudeAccountFolders = Effect.fn("migrateClaudeAccountFolder
       Effect.map(asRecord),
       Effect.orElseSucceed((): Json => ({})),
     );
+  // A login file that exists but can't be read fails the move, which keeps the instance for a retry.
+  const readLoginFile = (file: string) =>
+    fileSystem.readFileString(file).pipe(
+      Effect.catchReason("PlatformError", "NotFound", () => Effect.succeed("{}")),
+      Effect.flatMap(decodeJson),
+      Effect.map(asRecord),
+    );
+  // Written aside and renamed, so a crash never leaves a half-written login file.
   const writeJson = (file: string, value: unknown) =>
     fileSystem.makeDirectory(path.dirname(file), { recursive: true, mode: 0o700 }).pipe(
       Effect.andThen(encodeJson(value)),
-      Effect.flatMap((raw) => fileSystem.writeFileString(file, raw, { mode: 0o600 })),
+      Effect.flatMap((raw) =>
+        fileSystem
+          .writeFileString(`${file}.t3-migrate`, raw, { mode: 0o600 })
+          .pipe(Effect.andThen(fileSystem.rename(`${file}.t3-migrate`, file))),
+      ),
     );
 
-  const defaultConfig = asRecord(instances[DEFAULT_CLAUDE_INSTANCE]?.config);
-  const defaultFolder =
-    folderOf(defaultConfig) ??
-    (options.claudeConfigDir
-      ? path.resolve(options.claudeConfigDir)
-      : path.join(options.homeDir, ".claude"));
+  // The folder the driver gives the default instance: its Claude folder, else CLAUDE_CONFIG_DIR from
+  // its own environment or the server's, else ~/.claude.
+  const defaultEntry = instances[DEFAULT_CLAUDE_INSTANCE];
+  const defaultEnvironmentDir = (defaultEntry?.environment ?? []).find(
+    (variable) => variable.name === "CLAUDE_CONFIG_DIR" && typeof variable.value === "string",
+  )?.value;
+  const defaultHome =
+    text(asRecord(defaultEntry?.config).homePath) ||
+    (typeof defaultEnvironmentDir === "string" ? defaultEnvironmentDir : "") ||
+    options.claudeConfigDir ||
+    "";
+  const defaultFolder = defaultHome
+    ? resolveHome(defaultHome)
+    : path.join(options.homeDir, ".claude");
+  const realDefault = yield* realPath(defaultFolder);
   const defaultProjects = yield* realPath(path.join(defaultFolder, "projects"));
   const retired: Array<{
     readonly id: string;
@@ -79,10 +97,17 @@ export const migrateClaudeAccountFolders = Effect.fn("migrateClaudeAccountFolder
   for (const [id, entry] of Object.entries(instances)) {
     if (id === DEFAULT_CLAUDE_INSTANCE || entry.driver !== "claudeAgent") continue;
     const config = asRecord(entry.config);
-    const folder = folderOf(config);
+    const shadow = text(config.shadowHomePath);
+    const home = text(config.homePath);
+    // A shadow home shared the folder in `homePath` (empty: ~/.claude); fold it only into that folder.
+    const sharesDefault = shadow
+      ? (yield* realPath(home ? resolveHome(home) : path.join(options.homeDir, ".claude"))) ===
+        realDefault
+      : false;
+    const folder = shadow ? resolveHome(shadow) : home ? resolveHome(home) : undefined;
     if (!folder) continue;
     const linked = (yield* realPath(path.join(folder, "projects"))) === defaultProjects;
-    if (!text(config.shadowHomePath) && !linked) continue;
+    if (!sharesDefault && !linked) continue;
     retired.push({
       id,
       folder,
@@ -93,7 +118,7 @@ export const migrateClaudeAccountFolders = Effect.fn("migrateClaudeAccountFolder
   }
   if (retired.length === 0) return settings;
 
-  const storeDir = claudeAccountStoreDir(options.stateDir, yield* realPath(defaultFolder));
+  const storeDir = claudeAccountStoreDir(options.stateDir, realDefault);
   const recordFile = path.join(storeDir, RECORD_FILE);
   const indexFile = path.join(storeDir, "index.json");
   const record = asRecord((yield* readJson(recordFile)).instances);
@@ -120,13 +145,15 @@ export const migrateClaudeAccountFolders = Effect.fn("migrateClaudeAccountFolder
       addedAt: now,
     });
   }
+  // An instance whose login could not be moved stays as it is and is tried again at the next start.
+  const kept = new Set<string>();
   for (const instance of retired) {
     if (record[instance.id]) continue;
-    const accountId = yield* claudeLocks
+    const moved = yield* claudeLocks
       .withLocks(
         instance.folder,
         Effect.gen(function* () {
-          const credentials = yield* readJson(path.join(instance.folder, ".credentials.json"));
+          const credentials = yield* readLoginFile(path.join(instance.folder, ".credentials.json"));
           const login = describeLogin(credentials);
           if (!login) return null;
           const profile = asRecord(
@@ -148,7 +175,20 @@ export const migrateClaudeAccountFolders = Effect.fn("migrateClaudeAccountFolder
           return { login, profile };
         }),
       )
-      .pipe(Effect.orElseSucceed(() => null));
+      .pipe(Effect.result);
+    if (moved._tag === "Failure") {
+      yield* Effect.logWarning(
+        "Could not move a Claude account's login; it stays as it is for now.",
+        {
+          instanceId: instance.id,
+          folder: instance.folder,
+          cause: moved.failure,
+        },
+      );
+      kept.add(instance.id);
+      continue;
+    }
+    const accountId = moved.success;
     const id = accountId?.login.accountId ?? `pending:${instance.id}`;
     const email =
       text(accountId?.profile.emailAddress) ||
@@ -178,7 +218,13 @@ export const migrateClaudeAccountFolders = Effect.fn("migrateClaudeAccountFolder
     yield* writeJson(recordFile, { instances: record });
   }
 
-  const retiredIds = new Set(retired.map((instance) => instance.id));
+  const retiredIds = new Set(retired.map((instance) => instance.id).filter((id) => !kept.has(id)));
+  if (retiredIds.size === 0) return settings;
+  // Threads of a folded account run on the default instance: it can't stay off if they were on.
+  const defaultOff =
+    defaultEntry !== undefined &&
+    defaultEntry.enabled === false &&
+    retired.some((instance) => retiredIds.has(instance.id) && instance.enabled);
   const target = DEFAULT_CLAUDE_INSTANCE;
   const renameKeys = <V>(map: Readonly<Record<string, V>> | null | undefined) => {
     if (!map) return map;
@@ -201,13 +247,17 @@ export const migrateClaudeAccountFolders = Effect.fn("migrateClaudeAccountFolder
         .map(([id, entry]) => [
           id,
           entry.driver === "claudeAgent"
-            ? { ...entry, config: withoutConfigFields(entry.config) }
+            ? {
+                ...entry,
+                ...(id === DEFAULT_CLAUDE_INSTANCE && defaultOff ? { enabled: true } : {}),
+                config: withoutConfigFields(entry.config),
+              }
             : entry,
         ]),
     ),
     providerInstanceAliases: {
       ...settings.providerInstanceAliases,
-      ...Object.fromEntries(retired.map((instance) => [instance.id, target])),
+      ...Object.fromEntries([...retiredIds].map((id) => [id, target])),
     },
     textGenerators: renameKeys(settings.textGenerators) ?? settings.textGenerators,
     providerModelPreferences:

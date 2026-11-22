@@ -211,7 +211,10 @@ export const makeClaudeAccountStore = Effect.fn("ClaudeAccountStore.make")(funct
 
   const storedIds = fileSystem.readDirectory(options.storeDir).pipe(
     Effect.catchReason("PlatformError", "NotFound", () => Effect.succeed<Array<string>>([])),
-    Effect.map((names) => names.filter((name) => name.includes(".") && !name.endsWith(".json"))),
+    // Account folders are "<accountUuid>.<organizationUuid>"; files and lock folders are not.
+    Effect.map((names) =>
+      names.filter((name) => /^[\w-]+\.[\w-]+$/.test(name) && !/\.(json|txt|lock)$/.test(name)),
+    ),
     Effect.mapError(failure("read", "Could not read the account store.")),
   );
 
@@ -221,81 +224,97 @@ export const makeClaudeAccountStore = Effect.fn("ClaudeAccountStore.make")(funct
 
   const writeJournal = (value: Json) => writeJson(journalFile, value);
 
-  /** Method (ii) from step 1: save the outgoing login set, replace the folder's atomically, clear the incoming copy. */
-  const switchTo = Effect.fn("ClaudeAccountStore.switchTo")(function* (targetId: string) {
-    const target = yield* storedLogin(targetId);
-    if (!target) {
-      return yield* new ClaudeAccountStoreError({
-        operation: "switch",
-        detail: "This account has no stored sign-in. Sign in again.",
-      });
-    }
-    yield* locks.withLocks(
-      options.folder,
-      locks.withLocks(
-        accountDir(targetId),
-        Effect.gen(function* () {
-          const current = yield* readJson(folderFile);
-          const outgoing = describeLogin(current);
-          if (outgoing?.accountId === targetId) return;
-          const at = DateTime.formatIso(yield* DateTime.now);
-          yield* writeJournal({
-            fromId: outgoing?.accountId ?? null,
-            toId: targetId,
-            step: "start",
-            at,
-          });
-          if (outgoing) {
-            yield* writeJson(storedFile(outgoing.accountId), pickLoginSet(current));
-            yield* writeJournal({
-              fromId: outgoing.accountId,
-              toId: targetId,
-              step: "outgoing-saved",
-              at,
-            });
-          }
-          const incoming = pickLoginSet(yield* readJson(storedFile(targetId)));
-          yield* writeJson(folderFile, { ...withoutLoginSet(current), ...incoming });
-          yield* writeJournal({
-            fromId: outgoing?.accountId ?? null,
-            toId: targetId,
-            step: "installed",
-            at,
-          });
-          yield* removeStored(targetId);
-          yield* fileSystem.remove(journalFile, { force: true }).pipe(Effect.ignore);
-        }),
-      ),
-    );
-  });
-
   /**
    * After a crash or an outside change: the folder's login is the one in use and wins; a store copy of
    * the same account goes; a folder left without a login gets the journal's target (or its source).
    * Never deletes the only copy of a login.
    */
-  const reconcile = Effect.gen(function* () {
-    const journal = yield* readJson(journalFile);
-    yield* locks.withLocks(
-      options.folder,
-      Effect.gen(function* () {
-        const current = yield* readJson(folderFile);
-        let active = describeLogin(current);
-        if (!active) {
-          for (const candidate of [journal.toId, journal.fromId]) {
-            if (typeof candidate !== "string") continue;
-            const stored = yield* readJson(storedFile(candidate));
-            if (!describeLogin(stored)) continue;
-            yield* writeJson(folderFile, { ...withoutLoginSet(current), ...pickLoginSet(stored) });
-            yield* removeStored(candidate);
-            active = describeLogin(stored);
-            break;
-          }
+  const reconcile = locks.withLocks(
+    options.folder,
+    Effect.gen(function* () {
+      const journal = yield* readJson(journalFile);
+      const current = yield* readJson(folderFile);
+      let active = describeLogin(current);
+      if (!active) {
+        for (const candidate of [journal.toId, journal.fromId]) {
+          if (typeof candidate !== "string") continue;
+          const stored = yield* readJson(storedFile(candidate));
+          if (!describeLogin(stored)) continue;
+          yield* writeJson(folderFile, { ...withoutLoginSet(current), ...pickLoginSet(stored) });
+          yield* removeStored(candidate);
+          active = describeLogin(stored);
+          break;
         }
-        if (active) yield* removeStored(active.accountId);
-      }),
-    );
-    yield* fileSystem.remove(journalFile, { force: true }).pipe(Effect.ignore);
+      }
+      if (active) yield* removeStored(active.accountId);
+      yield* fileSystem.remove(journalFile, { force: true }).pipe(Effect.ignore);
+    }),
+  );
+
+  /**
+   * Method (ii) from step 1: save the outgoing login set, replace the folder's atomically, clear the
+   * incoming copy. The target's store folder is locked first, so the Claude folder's locks are held
+   * only while its files change. A switch that fails part way is put right at once by `reconcile`.
+   */
+  const switchTo = Effect.fn("ClaudeAccountStore.switchTo")(function* (targetId: string) {
+    yield* locks
+      .withLocks(
+        accountDir(targetId),
+        locks.withLocks(
+          options.folder,
+          Effect.gen(function* () {
+            const current = yield* readJson(folderFile);
+            const outgoing = describeLogin(current);
+            if (outgoing?.accountId === targetId) return;
+            const stored = yield* readJson(storedFile(targetId));
+            if (!describeLogin(stored)) {
+              return yield* new ClaudeAccountStoreError({
+                operation: "switch",
+                detail: "This account has no stored sign-in. Sign in again.",
+              });
+            }
+            const at = DateTime.formatIso(yield* DateTime.now);
+            yield* writeJournal({
+              fromId: outgoing?.accountId ?? null,
+              toId: targetId,
+              step: "start",
+              at,
+            });
+            if (outgoing) {
+              yield* writeJson(storedFile(outgoing.accountId), pickLoginSet(current));
+              yield* writeJournal({
+                fromId: outgoing.accountId,
+                toId: targetId,
+                step: "outgoing-saved",
+                at,
+              });
+            }
+            yield* writeJson(folderFile, { ...withoutLoginSet(current), ...pickLoginSet(stored) });
+            yield* writeJournal({
+              fromId: outgoing?.accountId ?? null,
+              toId: targetId,
+              step: "installed",
+              at,
+            });
+            yield* removeStored(targetId);
+            yield* fileSystem.remove(journalFile, { force: true }).pipe(Effect.ignore);
+          }),
+        ),
+      )
+      .pipe(
+        Effect.tapError(() =>
+          reconcile.pipe(
+            Effect.tapError((cause) =>
+              Effect.logWarning("Could not put a failed Claude account switch right.", {
+                storeDir: options.storeDir,
+                targetId,
+                cause,
+              }),
+            ),
+            Effect.ignore,
+          ),
+        ),
+      );
   });
 
   /** Saves a login set that a sign-in produced in a scratch folder as a stored (inactive) account. */
@@ -310,16 +329,10 @@ export const makeClaudeAccountStore = Effect.fn("ClaudeAccountStore.make")(funct
     yield* locks.withLocks(
       options.folder,
       Effect.gen(function* () {
-        const current = describeLogin(yield* readJson(folderFile));
-        if (current?.accountId === login.accountId) {
-          // A new sign-in of the active account replaces the folder's login set.
-          const folder = yield* readJson(folderFile);
-          yield* writeJson(folderFile, {
-            ...withoutLoginSet(folder),
-            ...pickLoginSet(credentials),
-          });
-        } else if (!current) {
-          const folder = yield* readJson(folderFile);
+        const folder = yield* readJson(folderFile);
+        const current = describeLogin(folder);
+        if (!current || current.accountId === login.accountId) {
+          // An empty folder takes the login; a new sign-in of the active account replaces its own.
           yield* writeJson(folderFile, {
             ...withoutLoginSet(folder),
             ...pickLoginSet(credentials),

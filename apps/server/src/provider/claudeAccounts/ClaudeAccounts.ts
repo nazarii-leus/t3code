@@ -204,6 +204,11 @@ export interface ClaudeAccountsOptions {
   ) => Effect.Effect<{ readonly code: number }, ClaudeAccountStoreError>;
   readonly activeSnapshot: Effect.Effect<ServerProvider>;
   readonly refreshActive: Effect.Effect<void>;
+  /**
+   * Set while a switch runs and until the new account's usage was read: usage events of requests the
+   * old account sent must not land on the new one.
+   */
+  readonly usageQuiet?: Ref.Ref<boolean>;
 }
 
 export interface ClaudeAccounts {
@@ -226,7 +231,7 @@ export interface ClaudeAccounts {
     enabled: boolean,
   ) => Effect.Effect<ProviderAccountsSnapshot, ProviderAccountsError>;
   readonly checkUsage: (accountId: string | null) => Effect.Effect<ProviderAccountsSnapshot>;
-  readonly resumeAutoSwitch: Effect.Effect<ProviderAccountsSnapshot>;
+  readonly resumeAutoSwitch: Effect.Effect<ProviderAccountsSnapshot, ProviderAccountsError>;
   readonly switchForLimit: ProviderAccountsController["switchForLimit"];
   readonly adoptSignIn: (
     scratchDir: string,
@@ -254,19 +259,48 @@ export const makeClaudeAccounts = Effect.fn("ClaudeAccounts.make")(function* (
   const nowMs = DateTime.now.pipe(Effect.map(DateTime.toEpochMillis));
   const nowIso = DateTime.now.pipe(Effect.map(DateTime.formatIso));
 
+  /** A missing file is empty; an unreadable one is an error the caller decides about. */
   const readJsonFile = (file: string) =>
     fileSystem.readFileString(file).pipe(
+      Effect.catchReason("PlatformError", "NotFound", () => Effect.succeed("{}")),
       Effect.flatMap(decodeJson),
       Effect.map(asRecord),
-      Effect.orElseSucceed((): Record<string, unknown> => ({})),
     );
+  // An unreadable index is kept aside, never overwritten, and the list is rebuilt from the logins.
+  const loadedIndex = yield* readJsonFile(indexFile).pipe(
+    Effect.catch((cause) =>
+      Effect.gen(function* () {
+        const aside = `${indexFile}.unreadable-${yield* nowMs}`;
+        yield* fileSystem.rename(indexFile, aside).pipe(Effect.ignore);
+        yield* Effect.logWarning("The Claude account index was unreadable; it was set aside.", {
+          aside,
+          cause,
+        });
+        return {};
+      }),
+    ),
+  );
   const index = yield* Ref.make<StoreIndex>({
     ...EMPTY_INDEX,
-    ...((yield* readJsonFile(indexFile)) as Partial<StoreIndex>),
+    ...(loadedIndex as Partial<StoreIndex>),
   });
-  const writeIndex = (next: StoreIndex) =>
-    Ref.set(index, next).pipe(
-      Effect.andThen(store.writeJson(indexFile, next as unknown as Record<string, unknown>)),
+  const indexLock = yield* Semaphore.make(1);
+  /** Read-modify-write of the index, one at a time; memory changes only when the file did. */
+  const updateIndex = (update: (current: StoreIndex) => StoreIndex) =>
+    indexLock.withPermits(1)(
+      Effect.gen(function* () {
+        const next = update(yield* Ref.get(index));
+        yield* store.writeJson(indexFile, next as unknown as Record<string, unknown>);
+        yield* Ref.set(index, next);
+        return next;
+      }),
+    );
+  /** For writes nobody waits on: a failure is logged, the in-memory list stays as it was. */
+  const updateIndexQuietly = (update: (current: StoreIndex) => StoreIndex) =>
+    updateIndex(update).pipe(
+      Effect.tapError((cause) =>
+        Effect.logWarning("Could not write the Claude account index.", { indexFile, cause }),
+      ),
       Effect.ignore,
     );
   const probes = yield* Ref.make<ReadonlyMap<string, ProbeState>>(new Map());
@@ -276,7 +310,22 @@ export const makeClaudeAccounts = Effect.fn("ClaudeAccounts.make")(function* (
   }>({ switching: null, lastError: null });
   const switchLock = yield* Semaphore.make(1);
   const readProfile = (file: string) =>
-    readJsonFile(file).pipe(Effect.map((json) => asRecord(json.oauthAccount)));
+    readJsonFile(file).pipe(
+      Effect.orElseSucceed((): Record<string, unknown> => ({})),
+      Effect.map((json) => asRecord(json.oauthAccount)),
+    );
+  const usageQuiet = options.usageQuiet ?? (yield* Ref.make(false));
+  // The active account as last seen, so a login changed outside T3 gets a history entry.
+  const lastActive = yield* Ref.make<string | null | undefined>(undefined);
+  // One Claude process per store folder: probes, switches and removal of an account take turns.
+  const accountPermits = new Map<string, Semaphore.Semaphore>();
+  const permitOf = (id: string) => {
+    const existing = accountPermits.get(id);
+    if (existing) return existing;
+    const created = Semaphore.makeUnsafe(1);
+    accountPermits.set(id, created);
+    return created;
+  };
   const activeLogin = store.activeLogin.pipe(Effect.orElseSucceed(() => undefined));
   const storedLogin = (id: string) =>
     store.storedLogin(id).pipe(Effect.orElseSucceed(() => undefined));
@@ -330,7 +379,13 @@ export const makeClaudeAccounts = Effect.fn("ClaudeAccounts.make")(function* (
       known.add(candidate.id);
     }
     if (additions.length > 0) {
-      yield* writeIndex({ ...current, accounts: [...current.accounts, ...additions] });
+      yield* updateIndexQuietly((latest) => ({
+        ...latest,
+        accounts: [
+          ...latest.accounts,
+          ...additions.filter((entry) => !latest.accounts.some((known) => known.id === entry.id)),
+        ],
+      }));
     }
   });
 
@@ -437,12 +492,43 @@ export const makeClaudeAccounts = Effect.fn("ClaudeAccounts.make")(function* (
   });
 
   const publish = render().pipe(Effect.flatMap((next) => SubscriptionRef.set(snapshotRef, next)));
-  const refresh = syncIndex().pipe(Effect.andThen(publish));
+  /** A login that changed outside T3 (`claude auth login` in a terminal) is a history entry. */
+  const noteOutsideChange = Effect.gen(function* () {
+    if ((yield* Ref.get(runtime)).switching) return;
+    const active = (yield* activeLogin)?.accountId ?? null;
+    const previous = yield* Ref.getAndSet(lastActive, active);
+    if (previous === undefined || active === null || previous === active) return;
+    const at = yield* nowIso;
+    yield* updateIndexQuietly((latest) => ({
+      ...latest,
+      history: [
+        {
+          at,
+          fromId: previous,
+          toId: active,
+          fromName: nameOf(latest, previous ?? undefined),
+          toName: nameOf(latest, active) ?? "Claude account",
+          reason: "outside" as const,
+          window: null,
+          initiator: { clientId: null, kind: "server" as const },
+        },
+        ...latest.history,
+      ].slice(0, HISTORY_LIMIT),
+    }));
+  });
+  const refresh = syncIndex().pipe(Effect.andThen(noteOutsideChange), Effect.andThen(publish));
 
   const setProbe = (id: string, update: (previous: ProbeState) => ProbeState) =>
     Ref.update(probes, (map) => new Map(map).set(id, update(map.get(id) ?? EMPTY_PROBE)));
 
-  const probeOne = Effect.fn("ClaudeAccounts.probe")(function* (id: string) {
+  /** Checks a stored account; skipped while its folder is busy (another probe, a switch, removal). */
+  const probeOne = (id: string) =>
+    permitOf(id).withPermitsIfAvailable(1)(
+      probeNow(id).pipe(
+        Effect.onInterrupt(() => setProbe(id, (previous) => ({ ...previous, probing: false }))),
+      ),
+    );
+  const probeNow = Effect.fn("ClaudeAccounts.probe")(function* (id: string) {
     const start = yield* nowMs;
     yield* setProbe(id, (previous) => ({
       ...previous,
@@ -465,7 +551,13 @@ export const makeClaudeAccounts = Effect.fn("ClaudeAccounts.make")(function* (
       }));
     } else {
       const message = result.failure.detail;
+      // The probe reports text only; these words are how Claude says the login is no longer valid.
       const authFailure = /auth|401|token|log ?in|invalid_grant|credential/i.test(message);
+      yield* Effect.logWarning("Could not check a stored Claude account.", {
+        accountId: id,
+        message,
+        treatedAsExpired: authFailure,
+      });
       yield* setProbe(id, (previous) => {
         const failures = previous.failures + 1;
         return {
@@ -505,8 +597,22 @@ export const makeClaudeAccounts = Effect.fn("ClaudeAccounts.make")(function* (
   const nameOf = (current: StoreIndex, id: string | undefined) =>
     current.accounts.find((entry) => entry.id === id)?.name ?? null;
 
-  /** Runs the switch; the caller holds `switchLock`. */
-  const switchNow = Effect.fn("ClaudeAccounts.switchNow")(function* (
+  /** Runs the switch; the caller holds `switchLock`. A caller that leaves early clears the flags. */
+  const switchNow = (
+    targetId: string,
+    reason: ProviderAccountSwitchEntry["reason"],
+    window: string | null,
+    initiator: SwitchInitiator,
+  ) =>
+    runSwitch(targetId, reason, window, initiator).pipe(
+      Effect.onInterrupt(() =>
+        Ref.update(runtime, (current) => ({ ...current, switching: null })).pipe(
+          Effect.andThen(Ref.set(usageQuiet, false)),
+          Effect.andThen(publish),
+        ),
+      ),
+    );
+  const runSwitch = Effect.fn("ClaudeAccounts.switchNow")(function* (
     targetId: string,
     reason: ProviderAccountSwitchEntry["reason"],
     window: string | null,
@@ -522,34 +628,47 @@ export const makeClaudeAccounts = Effect.fn("ClaudeAccounts.make")(function* (
       },
       lastError: null,
     });
+    yield* Ref.set(usageQuiet, true);
     yield* publish;
-    const outcome = yield* store.switchTo(targetId).pipe(Effect.result);
+    const permits = (effect: Effect.Effect<void, ClaudeAccountStoreError>) => {
+      const target = permitOf(targetId).withPermits(1)(effect);
+      return fromLogin ? permitOf(fromLogin.accountId).withPermits(1)(target) : target;
+    };
+    // Once the files start to move, the switch and its history entry finish even if the caller leaves.
+    const outcome = yield* permits(store.switchTo(targetId)).pipe(
+      Effect.uninterruptible,
+      Effect.result,
+    );
     const at = yield* nowIso;
     if (outcome._tag === "Failure") {
       yield* Ref.set(runtime, {
         switching: null,
         lastError: { at, message: outcome.failure.detail, toId: targetId },
       });
+      yield* Ref.set(usageQuiet, false);
       yield* publish;
       return yield* failure("use", outcome.failure.detail);
     }
-    const latest = yield* Ref.get(index);
     const entry: ProviderAccountSwitchEntry = {
       at,
       fromId: fromLogin?.accountId ?? null,
       toId: targetId,
-      fromName: nameOf(latest, fromLogin?.accountId),
-      toName: nameOf(latest, targetId) ?? "Claude account",
+      fromName: nameOf(yield* Ref.get(index), fromLogin?.accountId),
+      toName: nameOf(yield* Ref.get(index), targetId) ?? "Claude account",
       reason,
       window,
       initiator,
     };
-    yield* writeIndex({ ...latest, history: [entry, ...latest.history].slice(0, HISTORY_LIMIT) });
+    yield* updateIndexQuietly((latest) => ({
+      ...latest,
+      history: [entry, ...latest.history].slice(0, HISTORY_LIMIT),
+    })).pipe(Effect.uninterruptible);
+    yield* Ref.set(lastActive, targetId);
     yield* Ref.set(runtime, { switching: null, lastError: null });
     // The account that just left is checked at once, so its row shows fresh usage.
     if (fromLogin)
       yield* setProbe(fromLogin.accountId, (previous) => ({ ...previous, nextProbeAt: 0 }));
-    yield* options.refreshActive.pipe(Effect.ignore);
+    yield* options.refreshActive.pipe(Effect.ignore, Effect.ensuring(Ref.set(usageQuiet, false)));
     yield* publish;
     yield* dueProbes().pipe(Effect.ignore);
     return entry;
@@ -583,10 +702,10 @@ export const makeClaudeAccounts = Effect.fn("ClaudeAccounts.make")(function* (
     if (!current.accounts.some((entry) => entry.id === accountId)) {
       return yield* failure("update", "This account is no longer in the list.");
     }
-    yield* writeIndex({
-      ...current,
-      accounts: current.accounts.map((entry) => (entry.id === accountId ? update(entry) : entry)),
-    });
+    yield* updateIndex((latest) => ({
+      ...latest,
+      accounts: latest.accounts.map((entry) => (entry.id === accountId ? update(entry) : entry)),
+    })).pipe(Effect.mapError((error) => failure("update", error.detail)));
     yield* publish;
     return yield* render();
   });
@@ -603,22 +722,31 @@ export const makeClaudeAccounts = Effect.fn("ClaudeAccounts.make")(function* (
   const setAutoSwitch = (accountId: string, enabled: boolean) =>
     mutateEntry(accountId, (entry) => ({ ...entry, autoSwitch: enabled }));
 
-  const remove = Effect.fn("ClaudeAccounts.remove")(function* (accountId: string) {
+  // Under the switch lock and the account's permit, so no switch or probe uses the folder meanwhile.
+  const remove = (accountId: string) =>
+    switchLock.withPermits(1)(permitOf(accountId).withPermits(1)(removeNow(accountId)));
+  const removeNow = Effect.fn("ClaudeAccounts.remove")(function* (accountId: string) {
     const snapshot = yield* render();
     const account = snapshot.accounts.find((candidate) => candidate.id === accountId);
     if (!account) return snapshot;
     if (account.active) return yield* failure("remove", "Switch to another account first.");
     const dir = store.accountDir(accountId);
     if (yield* fileSystem.exists(dir).pipe(Effect.orElseSucceed(() => false))) {
-      // Revokes the login on Claude's side; a failure leaves nothing usable behind anyway.
-      yield* options.runClaude(dir, ["auth", "logout"]).pipe(Effect.ignore);
-      yield* fileSystem.remove(dir, { recursive: true, force: true }).pipe(Effect.ignore);
+      // Revokes the login on Claude's side; deleting the folder below is what removes it here.
+      yield* options.runClaude(dir, ["auth", "logout"]).pipe(
+        Effect.tapError((cause) =>
+          Effect.logWarning("Claude could not sign out a removed account.", { accountId, cause }),
+        ),
+        Effect.ignore,
+      );
+      yield* fileSystem
+        .remove(dir, { recursive: true, force: true })
+        .pipe(Effect.mapError(() => failure("remove", "Could not delete the account's sign-in.")));
     }
-    const current = yield* Ref.get(index);
-    yield* writeIndex({
-      ...current,
-      accounts: current.accounts.filter((entry) => entry.id !== accountId),
-    });
+    yield* updateIndex((latest) => ({
+      ...latest,
+      accounts: latest.accounts.filter((entry) => entry.id !== accountId),
+    })).pipe(Effect.mapError((error) => failure("remove", error.detail)));
     yield* Ref.update(probes, (map) => {
       const next = new Map(map);
       next.delete(accountId);
@@ -643,8 +771,9 @@ export const makeClaudeAccounts = Effect.fn("ClaudeAccounts.make")(function* (
   });
 
   const resumeAutoSwitch = Effect.gen(function* () {
-    const current = yield* Ref.get(index);
-    yield* writeIndex({ ...current, pausedUntil: null, autoSwitchLog: [] });
+    yield* updateIndex((latest) => ({ ...latest, pausedUntil: null, autoSwitchLog: [] })).pipe(
+      Effect.mapError((error) => failure("resume", error.detail)),
+    );
     yield* publish;
     return yield* render();
   });
@@ -654,14 +783,13 @@ export const makeClaudeAccounts = Effect.fn("ClaudeAccounts.make")(function* (
     windowId: string,
     resetAt: string,
   ) {
-    const current = yield* Ref.get(index);
-    yield* writeIndex({
-      ...current,
+    yield* updateIndexQuietly((latest) => ({
+      ...latest,
       limitedUntil: {
-        ...current.limitedUntil,
-        [accountId]: { ...current.limitedUntil[accountId], [windowId]: resetAt },
+        ...latest.limitedUntil,
+        [accountId]: { ...latest.limitedUntil[accountId], [windowId]: resetAt },
       },
-    });
+    }));
     yield* publish;
   });
 
@@ -719,18 +847,31 @@ export const makeClaudeAccounts = Effect.fn("ClaudeAccounts.make")(function* (
         if (!target) return undefined;
         const recent = current.autoSwitchLog.filter((at) => now - Date.parse(at) < HOUR_MS);
         if (recent.length >= AUTO_SWITCH_CAP_PER_HOUR) {
-          yield* writeIndex({ ...current, pausedUntil: isoOf(now + HOUR_MS) });
+          yield* updateIndexQuietly((latest) => ({ ...latest, pausedUntil: isoOf(now + HOUR_MS) }));
           yield* publish;
           return undefined;
         }
-        yield* writeIndex({ ...current, autoSwitchLog: [...recent, isoOf(now)] });
         const switched = yield* switchNow(target.id, "usage_limit", input.windowLabel, {
           clientId: null,
           kind: "server",
         }).pipe(Effect.result);
-        return switched._tag === "Success"
-          ? { fromName: nameOfId(failedId), toName: target.name }
-          : undefined;
+        if (switched._tag === "Failure") {
+          yield* Effect.logWarning("The automatic Claude account switch failed.", {
+            fromId: failedId,
+            toId: target.id,
+            detail: switched.failure.detail,
+          });
+          return undefined;
+        }
+        // Only switches that happened count toward the hourly cap.
+        yield* updateIndexQuietly((latest) => ({
+          ...latest,
+          autoSwitchLog: [
+            ...latest.autoSwitchLog.filter((at) => now - Date.parse(at) < HOUR_MS),
+            isoOf(now),
+          ],
+        }));
+        return { fromName: nameOfId(failedId), toName: target.name };
       }),
     );
   });
@@ -743,7 +884,11 @@ export const makeClaudeAccounts = Effect.fn("ClaudeAccounts.make")(function* (
     scratchDir: string,
     expectedId: string | null,
   ) {
-    const credentials = yield* readJsonFile(path.join(scratchDir, ".credentials.json"));
+    const credentials = yield* readJsonFile(path.join(scratchDir, ".credentials.json")).pipe(
+      Effect.mapError(() =>
+        failure("signIn", "Could not read the sign-in Claude saved. Try again."),
+      ),
+    );
     const login = describeLogin(credentials);
     if (!login) return yield* failure("signIn", "Claude did not save a sign-in. Try again.");
     const before = yield* Ref.get(index);
@@ -754,36 +899,65 @@ export const makeClaudeAccounts = Effect.fn("ClaudeAccounts.make")(function* (
       .pipe(Effect.mapError((error) => failure("signIn", error.detail)));
     if (wasActive !== undefined && wasActive !== login.accountId) {
       // A stored login keeps its profile beside it, so its row has an email and organization.
-      const profile = yield* readJsonFile(path.join(scratchDir, ".claude.json"));
+      const profile = yield* readJsonFile(path.join(scratchDir, ".claude.json")).pipe(
+        Effect.orElseSucceed((): Record<string, unknown> => ({})),
+      );
       yield* store
         .writeJson(path.join(store.accountDir(login.accountId), ".claude.json"), {
           hasCompletedOnboarding: true,
           oauthAccount: profile.oauthAccount,
           userID: profile.userID,
         })
-        .pipe(Effect.ignore);
+        .pipe(
+          Effect.tapError((cause) =>
+            Effect.logWarning("Could not save a stored account's profile.", { cause }),
+          ),
+          Effect.ignore,
+        );
+    }
+    if (wasActive === undefined) {
+      // The folder was empty, so this sign-in is now the active account.
+      yield* Ref.set(lastActive, login.accountId);
     }
     const pending = expectedId?.startsWith("pending:")
       ? before.accounts.find((entry) => entry.id === expectedId)
       : undefined;
     if (pending && !known) {
       // A migrated account without a login becomes this account, keeping its name and switch flag.
-      yield* Ref.update(index, (current) => ({
-        ...current,
-        accounts: current.accounts.filter((entry) => entry.id !== pending.id),
-      }));
+      yield* updateIndex((latest) => ({
+        ...latest,
+        accounts: latest.accounts.filter((entry) => entry.id !== pending.id),
+      })).pipe(Effect.mapError((error) => failure("signIn", error.detail)));
     }
     yield* syncIndex();
     if (pending && !known) {
-      const current = yield* Ref.get(index);
-      yield* writeIndex({
-        ...current,
-        accounts: current.accounts.map((entry) =>
+      yield* updateIndex((latest) => ({
+        ...latest,
+        accounts: latest.accounts.map((entry) =>
           entry.id === login.accountId
             ? { ...entry, name: pending.name, autoSwitch: pending.autoSwitch }
             : entry,
         ),
-      });
+      })).pipe(Effect.mapError((error) => failure("signIn", error.detail)));
+    }
+    if (wasActive === undefined) {
+      const at = yield* nowIso;
+      yield* updateIndexQuietly((latest) => ({
+        ...latest,
+        history: [
+          {
+            at,
+            fromId: null,
+            toId: login.accountId,
+            fromName: null,
+            toName: nameOf(latest, login.accountId) ?? "Claude account",
+            reason: "sign_in" as const,
+            window: null,
+            initiator: { clientId: null, kind: "server" as const },
+          },
+          ...latest.history,
+        ].slice(0, HISTORY_LIMIT),
+      }));
     }
     yield* setProbe(login.accountId, (previous) => ({
       ...previous,
@@ -813,7 +987,16 @@ export const makeClaudeAccounts = Effect.fn("ClaudeAccounts.make")(function* (
     return dir;
   });
 
-  yield* store.reconcile.pipe(Effect.ignore);
+  yield* store.reconcile.pipe(
+    Effect.tapError((cause) =>
+      Effect.logWarning("Could not reconcile the Claude account store at start.", {
+        storeDir: options.storeDir,
+        cause,
+      }),
+    ),
+    Effect.ignore,
+  );
+  yield* Ref.set(lastActive, (yield* activeLogin)?.accountId ?? null);
   yield* refresh.pipe(Effect.ignore);
   // Stored accounts are checked in the background; the folder is watched for outside changes.
   yield* Effect.forkScoped(
@@ -828,6 +1011,12 @@ export const makeClaudeAccounts = Effect.fn("ClaudeAccounts.make")(function* (
       Stream.filter((event) => event.path.endsWith(".credentials.json")),
       Stream.debounce("1 second"),
       Stream.runForEach(() => refresh.pipe(Effect.ignore)),
+      Effect.tapError((cause) =>
+        Effect.logWarning("Stopped watching the Claude folder for sign-ins made outside T3.", {
+          folder: options.folder,
+          cause,
+        }),
+      ),
       Effect.ignore,
     ),
   );

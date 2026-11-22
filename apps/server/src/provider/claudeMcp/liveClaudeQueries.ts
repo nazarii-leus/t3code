@@ -1,3 +1,6 @@
+// @effect-diagnostics nodeBuiltinImport:off - a plain module the adapter fills; it waits with Node timers.
+import * as NodeTimersPromises from "node:timers/promises";
+
 /**
  * Running Claude sessions by Claude folder, so a server signed in from Settings can be reconnected
  * in threads that are already running. Sessions register themselves and drop out when their process
@@ -23,18 +26,40 @@ export function trackLiveClaudeQuery(
   void exited?.finally(() => queries.delete(query));
 }
 
-/** Returns how many sessions reconnected; a session that fails is dropped from the list. */
-export async function reconnectLiveClaudeQueries(key: string, serverName: string): Promise<number> {
+const RECONNECT_TIMEOUT_MS = 10_000;
+
+/**
+ * Reconnects a server in every running session of a folder. A session that fails (it may not have
+ * that server) stays listed; it drops out only when its process exits.
+ */
+export async function reconnectLiveClaudeQueries(
+  key: string,
+  serverName: string,
+): Promise<{ readonly reconnected: number; readonly failed: number }> {
   const queries = live.get(key);
-  if (!queries) return 0;
   let reconnected = 0;
-  for (const query of queries) {
+  let failed = 0;
+  for (const query of queries ?? []) {
+    const timeout = new AbortController();
     try {
-      await query.reconnectMcpServer(serverName);
+      await Promise.race([
+        query.reconnectMcpServer(serverName),
+        NodeTimersPromises.setTimeout(RECONNECT_TIMEOUT_MS, undefined, {
+          signal: timeout.signal,
+        }).then(
+          () => {
+            throw new Error("timed out");
+          },
+          // Aborted once the reconnect settled.
+          () => undefined,
+        ),
+      ]);
       reconnected++;
     } catch {
-      queries.delete(query);
+      failed++;
+    } finally {
+      timeout.abort();
     }
   }
-  return reconnected;
+  return { reconnected, failed };
 }

@@ -21,7 +21,7 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
-import type * as Scope from "effect/Scope";
+import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
@@ -35,38 +35,53 @@ const asRecord = (value: unknown): Json =>
 const asStrings = (value: unknown) =>
   Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 
-const TOKEN_FLAG = /^--?(token|api[-_]?key|key|secret|password|auth)(=.*)?$/i;
+const TOKEN_FLAG =
+  /^--?(token|api[-_]?key|key|secret|password|auth|authorization|bearer|header)(=.*)?$/i;
 const LONG_SECRET = /^[A-Za-z0-9+/_=.-]{24,}$/;
+const SECRET_TEXT = /bearer\s+\S|authorization\s*:|api[-_]?key\s*[:=]/i;
+const MASK = "••••";
 
-/** URL without query or userinfo; a command with token-like arguments masked. Never a secret. */
+/** Scheme, host and path, without query or userinfo; a token-like path segment is masked. */
+function redactMcpUrl(url: string): string {
+  const parsed = URL.parse(url);
+  if (!parsed) return "";
+  const pathname = parsed.pathname
+    .split("/")
+    .map((segment) => (LONG_SECRET.test(segment) ? MASK : segment))
+    .join("/");
+  return `${parsed.protocol}//${parsed.host}${pathname}`;
+}
+
+/** A command line with every secret-looking argument masked, index for index. */
+function redactMcpArgs(parts: ReadonlyArray<string>): string[] {
+  let maskNext = false;
+  return parts.map((part) => {
+    if (maskNext) {
+      maskNext = false;
+      return MASK;
+    }
+    const flag = TOKEN_FLAG.exec(part);
+    if (flag) {
+      if (flag[2]) return `${part.slice(0, part.indexOf("="))}=${MASK}`;
+      maskNext = true;
+      return part;
+    }
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(part)) return redactMcpUrl(part) || MASK;
+    if (/^[A-Z0-9_]+=.+/.test(part)) return `${part.slice(0, part.indexOf("="))}=${MASK}`;
+    if (SECRET_TEXT.test(part)) return MASK;
+    return LONG_SECRET.test(part) ? MASK : part;
+  });
+}
+
+/** What clients see of a server's address. Never a secret. */
 export function redactMcpTarget(config: Json): string {
   const url = typeof config.url === "string" ? config.url : undefined;
-  if (url) {
-    const parsed = URL.parse(url);
-    return parsed ? `${parsed.protocol}//${parsed.host}${parsed.pathname}` : "";
-  }
-  const parts = [
-    typeof config.command === "string" ? config.command : "",
-    ...asStrings(config.args),
-  ];
-  let maskNext = false;
-  return parts
-    .filter((part) => part.length > 0)
-    .map((part) => {
-      if (maskNext) {
-        maskNext = false;
-        return "••••";
-      }
-      const flag = TOKEN_FLAG.exec(part);
-      if (flag) {
-        if (flag[2]) return `${part.slice(0, part.indexOf("="))}=••••`;
-        maskNext = true;
-        return part;
-      }
-      if (/^[A-Z0-9_]+=.+/.test(part)) return `${part.slice(0, part.indexOf("="))}=••••`;
-      return LONG_SECRET.test(part) ? "••••" : part;
-    })
-    .join(" ");
+  if (url) return redactMcpUrl(url);
+  return redactMcpArgs(
+    [typeof config.command === "string" ? config.command : "", ...asStrings(config.args)].filter(
+      (part) => part.length > 0,
+    ),
+  ).join(" ");
 }
 
 const transportOf = (config: Json): ProviderMcpServer["transport"] => {
@@ -107,6 +122,7 @@ export const makeClaudeMcpManager = Effect.fn("ClaudeMcpManager.make")(function*
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const lock = yield* Semaphore.make(1);
+  const scope = yield* Scope.Scope;
   const failure = (operation: string, detail: string) =>
     new ProviderMcpError({ instanceId: options.instanceId, operation, detail });
   const snapshots = new Map<string, SubscriptionRef.SubscriptionRef<ProviderMcpSnapshot>>();
@@ -123,6 +139,18 @@ export const makeClaudeMcpManager = Effect.fn("ClaudeMcpManager.make")(function*
     readonly name: string;
     readonly config: Json;
   }
+
+  /** The OAuth client secret Claude keeps for a server; it never leaves the server. */
+  const storedClientSecret = Effect.fn("ClaudeMcpManager.storedClientSecret")(function* (
+    name: string,
+  ) {
+    const credentials = yield* readJson(path.join(options.folder, ".credentials.json"));
+    for (const [entryKey, entry] of Object.entries(asRecord(credentials.mcpOAuthClientConfig))) {
+      const secret = asRecord(entry).clientSecret;
+      if (entryKey.split("|")[0] === name && typeof secret === "string" && secret) return secret;
+    }
+    return undefined;
+  });
 
   const configured = Effect.fn("ClaudeMcpManager.configured")(function* (
     project: ProviderMcpProject | null,
@@ -286,7 +314,22 @@ export const makeClaudeMcpManager = Effect.fn("ClaudeMcpManager.make")(function*
     );
   };
 
-  const runCheck = Effect.fn("ClaudeMcpManager.runCheck")(function* (
+  /** A check that is cut short (the client left) clears its spinners. */
+  const runCheck = (project: ProviderMcpProject | null, key: string | null) =>
+    runCheckNow(project, key).pipe(
+      Effect.onInterrupt(() =>
+        refOf(project).pipe(
+          Effect.flatMap((ref) =>
+            SubscriptionRef.update(ref, (snapshot) => ({
+              ...snapshot,
+              checking: false,
+              servers: snapshot.servers.map((server) => ({ ...server, checking: false })),
+            })),
+          ),
+        ),
+      ),
+    );
+  const runCheckNow = Effect.fn("ClaudeMcpManager.runCheck")(function* (
     project: ProviderMcpProject | null,
     key: string | null,
   ) {
@@ -368,8 +411,12 @@ export const makeClaudeMcpManager = Effect.fn("ClaudeMcpManager.make")(function*
         let output = "";
         child.stdout?.on("data", (chunk) => (output = (output + String(chunk)).slice(-4_000)));
         child.stderr?.on("data", (chunk) => (output = (output + String(chunk)).slice(-4_000)));
-        child.on("error", () => resume(Effect.succeed({ code: -1, output })));
+        child.on("error", (error) =>
+          resume(Effect.succeed({ code: -1, output: output || error.message })),
+        );
         child.on("close", (code) => resume(Effect.succeed({ code: code ?? -1, output })));
+        // A child that exits before reading stdin makes the pipe fail; the exit code reports it.
+        child.stdin?.on("error", () => undefined);
         child.stdin?.end(stdin ?? "");
         return Effect.sync(() => child.kill());
       });
@@ -438,13 +485,14 @@ export const makeClaudeMcpManager = Effect.fn("ClaudeMcpManager.make")(function*
         | "http"
         | "sse"
         | "stdio",
-      url: typeof config.url === "string" ? config.url : null,
+      // Secrets in the address or the arguments stay masked; a save keeps the stored values.
+      url: typeof config.url === "string" ? redactMcpUrl(config.url) : null,
       headerNames: Object.keys(asRecord(config.headers)),
       command: typeof config.command === "string" ? config.command : null,
-      args: asStrings(config.args),
+      args: redactMcpArgs(asStrings(config.args)),
       envNames: Object.keys(asRecord(config.env)),
       oauthClientId: typeof oauth.clientId === "string" ? oauth.clientId : null,
-      oauthHasClientSecret: false,
+      oauthHasClientSecret: (yield* storedClientSecret(entry.name)) !== undefined,
       oauthCallbackPort: typeof oauth.callbackPort === "number" ? oauth.callbackPort : null,
     } satisfies ProviderMcpServerConfigView;
   });
@@ -468,17 +516,25 @@ export const makeClaudeMcpManager = Effect.fn("ClaudeMcpManager.make")(function*
       : undefined;
     if (input.transport === "stdio") {
       const env = pairs("env", input.env);
+      // An argument sent back exactly as `get` masked it keeps the stored value at that place.
+      const storedArgs = asStrings(previous?.args);
+      const maskedArgs = redactMcpArgs(storedArgs);
       return {
         type: "stdio",
         command: input.command ?? "",
-        args: [...(input.args ?? [])].filter((arg) => arg.length > 0),
+        args: [...(input.args ?? [])]
+          .map((arg, at) =>
+            at < storedArgs.length && arg === maskedArgs[at] ? storedArgs[at]! : arg,
+          )
+          .filter((arg) => arg.length > 0),
         ...(Object.keys(env).length > 0 ? { env } : {}),
       };
     }
     const headers = pairs("headers", input.headers);
+    const storedUrl = typeof previous?.url === "string" ? previous.url : undefined;
     return {
       type: input.transport,
-      url: input.url ?? "",
+      url: storedUrl && input.url === redactMcpUrl(storedUrl) ? storedUrl : (input.url ?? ""),
       ...(Object.keys(headers).length > 0 ? { headers } : {}),
       ...(oauth && Object.keys(oauth).length > 0 ? { oauth } : {}),
     };
@@ -545,6 +601,11 @@ export const makeClaudeMcpManager = Effect.fn("ClaudeMcpManager.make")(function*
           if (mode === "add" && previous)
             return yield* failure("save", `${input.name} already exists here.`);
           const config = buildConfig(input, previous?.config);
+          // `claude mcp remove` deletes the stored client secret, so an edit passes it back.
+          const keptSecret =
+            mode === "replace" && previous && !input.oauth?.clientSecret
+              ? yield* storedClientSecret(input.name)
+              : undefined;
           if (mode === "replace" && previous) {
             const removed = yield* runCli(
               ["mcp", "remove", input.name, "--scope", input.scope],
@@ -562,11 +623,11 @@ export const makeClaudeMcpManager = Effect.fn("ClaudeMcpManager.make")(function*
             input.scope,
             cwd,
             config,
-            input.oauth?.clientSecret,
+            input.oauth?.clientSecret || keptSecret,
           );
           if (added.code !== 0) {
             if (mode === "replace" && previous) {
-              yield* addJson(input.name, input.scope, cwd, previous.config, undefined);
+              yield* addJson(input.name, input.scope, cwd, previous.config, keptSecret);
               return yield* failure(
                 "save",
                 `Claude couldn't save the server: ${lastLine(added.output)}. The old settings were kept.`,
@@ -592,6 +653,7 @@ export const makeClaudeMcpManager = Effect.fn("ClaudeMcpManager.make")(function*
         const entry = yield* findConfigured(project, key);
         const cwd = cwdFor(project, entry.scope);
         const { signedIn } = yield* configured(project);
+        // A failed sign-out leaves a token Claude no longer uses once the server is gone.
         if (signedIn.has(entry.name))
           yield* runCli(["mcp", "logout", entry.name], cwd).pipe(Effect.ignore);
         const removed = yield* runCli(["mcp", "remove", entry.name, "--scope", entry.scope], cwd);
@@ -643,9 +705,15 @@ export const makeClaudeMcpManager = Effect.fn("ClaudeMcpManager.make")(function*
       (candidate) => candidate.key === key,
     );
     if (!server) return yield* failure("reconnect", "This server is no longer listed.");
-    const reconnected = yield* Effect.promise(() =>
+    const { reconnected, failed } = yield* Effect.promise(() =>
       reconnectLiveClaudeQueries(liveClaudeQueryKey(options.environment), server.name),
     );
+    if (failed > 0) {
+      yield* Effect.logWarning("Some running Claude sessions did not reconnect an MCP server.", {
+        server: server.name,
+        failed,
+      });
+    }
     yield* lock.withPermits(1)(runCheck(project, key));
     return { reconnected };
   });
@@ -660,8 +728,13 @@ export const makeClaudeMcpManager = Effect.fn("ClaudeMcpManager.make")(function*
     return cwd ? { name, cwd } : undefined;
   };
 
-  /** After a sign-in or sign-out: reconnect in running threads, then check that server everywhere it is listed. */
-  const afterSignIn = Effect.fn("ClaudeMcpManager.afterSignIn")(function* (key: string) {
+  /**
+   * After a sign-in or sign-out: reconnect in running threads, then check that server everywhere it
+   * is listed. It runs in the background, so the sign-in flow ends when Claude is done.
+   */
+  const afterSignIn = (key: string) =>
+    Effect.forkIn(afterSignInNow(key).pipe(Effect.ignore), scope).pipe(Effect.asVoid);
+  const afterSignInNow = Effect.fn("ClaudeMcpManager.afterSignIn")(function* (key: string) {
     const target = signInTarget(key);
     if (!target) return;
     yield* Effect.promise(() =>
