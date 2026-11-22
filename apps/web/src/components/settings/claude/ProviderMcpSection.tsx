@@ -1,5 +1,6 @@
-import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
 import {
+  mcpGroupTitle,
+  mcpMenuLabel,
   mcpServerGroups,
   mcpServerRowModel,
   type McpMenuItem,
@@ -35,6 +36,7 @@ import { cn, randomUUID } from "../../../lib/utils";
 import { useEnvironmentQuery } from "../../../state/query";
 import { serverEnvironment } from "../../../state/server";
 import { useAtomCommand } from "../../../state/use-atom-command";
+import { commandSucceeded } from "./commandSucceeded";
 import { Alert, AlertAction, AlertTitle } from "../../ui/alert";
 import { Badge } from "../../ui/badge";
 import { Button, InlineButton } from "../../ui/button";
@@ -163,24 +165,15 @@ export function ProviderMcpSection({
     ? auth.methodId.slice(PROVIDER_MCP_METHOD_PREFIX.length)
     : null;
 
-  async function outcome<A>(result: AtomCommandResult<A, unknown>, title: string) {
-    if (result._tag === "Success") return result.value;
-    if (isAtomCommandInterrupted(result)) return undefined;
-    const failure = squashAtomCommandFailure(result);
-    toastManager.add({
-      type: "error",
-      title,
-      description:
-        failure instanceof Error ? (thrownErrorMessage(failure, m) ?? failure.message) : undefined,
-    });
-    return undefined;
-  }
+  const outcome = <A, E>(result: AtomCommandResult<A, E>, failureTitle: string) =>
+    commandSucceeded(result, failureTitle, m);
 
   const target = (key: string) => ({ environmentId, input: { instanceId, projectId, key } });
 
   async function openEdit(server: ProviderMcpServer) {
-    const view = await outcome(await getServer(target(server.key)), gt("Couldn't read the server"));
-    if (!view) return;
+    const result = await getServer(target(server.key));
+    if (!outcome(result, gt("Couldn't read the server"))) return;
+    const view = result.value;
     setSaveError(null);
     setDraft({
       ...emptyDraft,
@@ -212,17 +205,17 @@ export function ProviderMcpSection({
       case "check":
         return outcome(await check(target(server.key)), gt("Couldn't check the server"));
       case "reconnect": {
-        const result = await outcome(await reconnect(target(server.key)), gt("Couldn't reconnect"));
-        if (result) {
+        const result = await reconnect(target(server.key));
+        if (outcome(result, gt("Couldn't reconnect"))) {
           toastManager.add({
             type: "success",
             title:
-              result.reconnected === 0
+              result.value.reconnected === 0
                 ? gt("No running threads")
                 : gt(
                     "{count, plural, one {Reconnected {name} in {count} thread} other {Reconnected {name} in {count} threads}}",
                     {
-                      count: result.reconnected,
+                      count: result.value.reconnected,
                       name: server.name,
                     },
                   ),
@@ -310,18 +303,7 @@ export function ProviderMcpSection({
     }
   }
 
-  const menuLabel = (item: McpMenuItem) =>
-    ({
-      check: gt("Check again"),
-      reconnect: gt("Reconnect in running threads"),
-      "sign-in": gt("Sign in"),
-      "sign-out": gt("Sign out"),
-      "turn-off": gt("Turn off in this project"),
-      "turn-on": gt("Turn on"),
-      edit: gt("Edit…"),
-      copy: gt("Copy address"),
-      remove: gt("Remove…"),
-    })[item];
+  const menuLabel = (item: McpMenuItem) => mcpMenuLabel(item, m);
 
   function validate(current: Draft) {
     if (current.mode === "add") {
@@ -407,17 +389,7 @@ export function ProviderMcpSection({
     }
   }
 
-  const groupTitle = (id: string) =>
-    ({
-      project: gt("This project"),
-      user: gt("Yours, all projects"),
-      plugin: gt("From plugins"),
-      claudeai: gt("From claude.ai · {name}", {
-        name: provider.accounts?.accounts.find((account) => account.active)?.name ?? "",
-      }),
-      managed: gt("Set by your organization"),
-      other: gt("Other"),
-    })[id] ?? id;
+  const activeName = provider.accounts?.accounts.find((account) => account.active)?.name ?? "";
 
   const groups = mcpServerGroups(state?.servers ?? []);
   const checkedAt = state?.checkedAt
@@ -519,7 +491,7 @@ export function ProviderMcpSection({
           {groups.map((group) => (
             <div key={group.id}>
               <p className="px-3 pt-3 text-2xs uppercase tracking-wide text-muted-foreground sm:px-4">
-                {groupTitle(group.id)}
+                {mcpGroupTitle(group.id, activeName, m)}
               </p>
               {group.servers.map((server) => {
                 const model = mcpServerRowModel({

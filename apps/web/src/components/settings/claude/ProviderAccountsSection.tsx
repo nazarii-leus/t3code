@@ -1,6 +1,8 @@
-import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
 import {
+  accountMenuLabel,
   accountRowModel,
+  autoSwitchStatusText,
+  switchAccountsText,
   switchReasonText,
   type AccountMenuItem,
 } from "@t3tools/client-runtime/provider-accounts";
@@ -28,6 +30,7 @@ import { cn } from "../../../lib/utils";
 import { useEnvironmentQuery } from "../../../state/query";
 import { serverEnvironment } from "../../../state/server";
 import { useAtomCommand } from "../../../state/use-atom-command";
+import { commandSucceeded } from "./commandSucceeded";
 import { Alert, AlertAction, AlertTitle } from "../../ui/alert";
 import { Badge } from "../../ui/badge";
 import { Button } from "../../ui/button";
@@ -105,18 +108,8 @@ export function ProviderAccountsSection({
   const showFlow = (methodId: string) =>
     accountFlow === methodId && (flowActive || auth?.phase === "failed");
 
-  async function outcome(result: AtomCommandResult<unknown, unknown>, failureTitle: string) {
-    if (result._tag === "Success") return true;
-    if (isAtomCommandInterrupted(result)) return false;
-    const failure = squashAtomCommandFailure(result);
-    toastManager.add({
-      type: "error",
-      title: failureTitle,
-      description:
-        failure instanceof Error ? (thrownErrorMessage(failure, m) ?? failure.message) : undefined,
-    });
-    return false;
-  }
+  const outcome = <A, E>(result: AtomCommandResult<A, E>, failureTitle: string) =>
+    commandSucceeded(result, failureTitle, m);
 
   async function signIn(methodId: string) {
     if (methodId === PROVIDER_ACCOUNT_ADD_METHOD_ID) setAddOpen(true);
@@ -193,27 +186,12 @@ export function ProviderAccountsSection({
     }
   }
 
-  const menuLabel = (item: AccountMenuItem) =>
-    ({
-      use: gt("Use"),
-      "check-usage": gt("Check usage"),
-      "sign-in": gt("Sign in"),
-      "sign-in-again": gt("Sign in again"),
-      "auto-switch-off": gt("Leave out of automatic switching"),
-      "auto-switch-on": gt("Include in automatic switching"),
-      rename: gt("Rename…"),
-      "copy-email": gt("Copy email"),
-      "sign-out": gt("Sign out…"),
-      remove: gt("Remove…"),
-    })[item];
+  const menuLabel = (item: AccountMenuItem) => accountMenuLabel(item, m);
 
   const activeAccount = snapshot.accounts.find((account) => account.active);
-  const signedIn = snapshot.accounts.filter((account) => account.state === "ready");
   const nameOf = (id: string | null) =>
     snapshot.accounts.find((account) => account.id === id)?.name ?? "";
   const lastSwitch = snapshot.history[0];
-  const switchAccounts = (entry: { readonly fromName: string | null; readonly toName: string }) =>
-    entry.fromName ? `${entry.fromName} → ${entry.toName}` : entry.toName;
   const errorKey = snapshot.lastError?.at ?? null;
 
   if (!snapshot.supported && snapshot.accounts.length <= 1) {
@@ -597,12 +575,9 @@ export function ProviderAccountsSection({
             )}
             status={
               <span className="flex flex-wrap items-center gap-1">
-                {snapshot.autoSwitch.blockedReason === "paused" &&
-                snapshot.autoSwitch.pausedUntil ? (
+                {snapshot.autoSwitch.blockedReason === "paused" ? (
                   <span className="text-warning">
-                    {gt("Automatic switching paused until {time}: 5 switches in an hour.", {
-                      time: formatTime(snapshot.autoSwitch.pausedUntil),
-                    })}{" "}
+                    {autoSwitchStatusText(snapshot, formatTime, m)}{" "}
                     <Button
                       size="xs"
                       variant="link"
@@ -616,19 +591,15 @@ export function ProviderAccountsSection({
                       <T>Resume now</T>
                     </Button>
                   </span>
-                ) : snapshot.autoSwitch.blockedReason === "one_account" || signedIn.length < 2 ? (
-                  <T>Add another account to keep working when this one runs out of usage.</T>
-                ) : snapshot.autoSwitch.targetId ? (
-                  gt("Next: {name}.", { name: nameOf(snapshot.autoSwitch.targetId) })
                 ) : (
-                  <T>No other account has room left.</T>
+                  autoSwitchStatusText(snapshot, formatTime, m)
                 )}
                 {lastSwitch ? (
                   <>
                     <span>
                       {gt("Last switch {time}: {accounts} ({reason})", {
                         time: formatTime(lastSwitch.at),
-                        accounts: switchAccounts(lastSwitch),
+                        accounts: switchAccountsText(lastSwitch),
                         reason: switchReasonText(lastSwitch, providerAccountsClientId, m),
                       })}
                     </span>
@@ -640,7 +611,7 @@ export function ProviderAccountsSection({
                         <div className="grid max-w-md gap-1.5 text-xs">
                           {snapshot.history.map((entry) => (
                             <div key={entry.at}>
-                              {formatTime(entry.at)} · {switchAccounts(entry)}{" "}
+                              {formatTime(entry.at)} · {switchAccountsText(entry)}{" "}
                               <span className="text-muted-foreground">
                                 · {switchReasonText(entry, providerAccountsClientId, m)}
                               </span>

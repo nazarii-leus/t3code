@@ -1,9 +1,15 @@
 import { useAtomValue } from "@effect/atom-react";
+import * as Clipboard from "expo-clipboard";
 import { errorDisplayMessage } from "@t3tools/client-runtime/errors";
 import {
+  accountMenuLabel,
   accountRowModel,
+  autoSwitchStatusText,
+  mcpGroupTitle,
+  mcpMenuLabel,
   mcpServerGroups,
   mcpServerRowModel,
+  switchAccountsText,
   switchReasonText,
   type AccountMenuItem,
   type McpMenuItem,
@@ -163,30 +169,16 @@ function AccountsSection({
   const updateSettings = useAtomCommand(serverEnvironment.updateSettings, COMMANDS);
   const accountSwitch = useClaudeAccountSwitch();
   const { run, error } = useRunner();
-  const [revealed, setRevealed] = useState<string | null>(null);
   const now = useNowMinuteMs();
   const flowActive = ACTIVE_PHASES.has(auth?.phase ?? "");
   const accountFlow = auth?.methodId?.startsWith("account:") ? auth.methodId : null;
   const activeAccount = snapshot.accounts.find((account) => account.active);
-  const readyCount = snapshot.accounts.filter((account) => account.state === "ready").length;
   const nameOf = (id: string | null) =>
     snapshot.accounts.find((account) => account.id === id)?.name ?? "";
   const signIn = (methodId: string) =>
     void run(() => start({ environmentId, input: { instanceId, methodId } }));
 
-  const menuLabel = (item: AccountMenuItem) =>
-    ({
-      use: gt("Use"),
-      "check-usage": gt("Check usage"),
-      "sign-in": gt("Sign in"),
-      "sign-in-again": gt("Sign in again"),
-      "auto-switch-off": gt("Leave out of automatic switching"),
-      "auto-switch-on": gt("Include in automatic switching"),
-      rename: gt("Rename…"),
-      "copy-email": gt("Show email"),
-      "sign-out": gt("Sign out…"),
-      remove: gt("Remove…"),
-    })[item];
+  const menuLabel = (item: AccountMenuItem) => accountMenuLabel(item, m);
 
   function onMenu(account: ProviderAccount, item: AccountMenuItem) {
     const target = { environmentId, input: { instanceId, accountId: account.id } };
@@ -220,7 +212,8 @@ function AccountsSection({
           },
         });
       case "copy-email":
-        return setRevealed((current) => (current === account.id ? null : account.id));
+        if (account.email) void Clipboard.setStringAsync(account.email);
+        return;
       case "sign-out":
         return Dialog.confirm({
           title: gt("Sign out?"),
@@ -261,16 +254,7 @@ function AccountsSection({
         : snapshot.switching && snapshot.switching.initiatorClientId !== mobileAccountsClientId
           ? gt("Switching to {name}…", { name: nameOf(snapshot.switching.toId) })
           : null;
-  const autoSwitchStatus =
-    snapshot.autoSwitch.blockedReason === "paused" && snapshot.autoSwitch.pausedUntil
-      ? gt("Automatic switching paused until {time}: 5 switches in an hour.", {
-          time: formatAccountTime(snapshot.autoSwitch.pausedUntil),
-        })
-      : snapshot.autoSwitch.blockedReason === "one_account" || readyCount < 2
-        ? gt("Add another account to keep working when this one runs out of usage.")
-        : snapshot.autoSwitch.targetId
-          ? gt("Next: {name}.", { name: nameOf(snapshot.autoSwitch.targetId) })
-          : gt("No other account has room left.");
+  const autoSwitchStatus = autoSwitchStatusText(snapshot, formatAccountTime, m);
 
   return (
     <>
@@ -320,12 +304,7 @@ function AccountsSection({
               disabled: item === "use" && snapshot.switching !== null,
             },
           }));
-          const subtitle = [
-            account.active ? gt("Active") : null,
-            account.plan,
-            revealed === account.id ? account.email : null,
-            model.status,
-          ]
+          const subtitle = [account.active ? gt("Active") : null, account.plan, model.status]
             .filter(Boolean)
             .join(" · ");
           return (
@@ -457,8 +436,7 @@ function AccountsSection({
           ) : (
             snapshot.history.slice(0, 20).map((entry) => (
               <Text key={entry.at} textRole="footnote" className="text-foreground-muted">
-                {formatAccountTime(entry.at)} ·{" "}
-                {entry.fromName ? `${entry.fromName} → ${entry.toName}` : entry.toName} ·{" "}
+                {formatAccountTime(entry.at)} · {switchAccountsText(entry)} ·{" "}
                 {switchReasonText(entry, mobileAccountsClientId, m)}
               </Text>
             ))
@@ -623,27 +601,7 @@ function McpSection({
   const target = (key: string) => ({ environmentId, input: { instanceId, projectId, key } });
   const activeName = provider.accounts?.accounts.find((account) => account.active)?.name ?? "";
 
-  const groupTitle = (id: string) =>
-    ({
-      project: gt("This project"),
-      user: gt("Yours, all projects"),
-      plugin: gt("From plugins"),
-      claudeai: gt("From claude.ai · {name}", { name: activeName }),
-      managed: gt("Set by your organization"),
-      other: gt("Other"),
-    })[id] ?? id;
-  const menuLabel = (item: McpMenuItem) =>
-    ({
-      check: gt("Check again"),
-      reconnect: gt("Reconnect in running threads"),
-      "sign-in": gt("Sign in"),
-      "sign-out": gt("Sign out"),
-      "turn-off": gt("Turn off in this project"),
-      "turn-on": gt("Turn on"),
-      edit: gt("Edit…"),
-      copy: gt("Show address"),
-      remove: gt("Remove…"),
-    })[item];
+  const menuLabel = (item: McpMenuItem) => mcpMenuLabel(item, m);
 
   async function openEdit(server: ProviderMcpServer) {
     const result = await getServer(target(server.key));
@@ -693,7 +651,8 @@ function McpSection({
       case "edit":
         return void openEdit(server);
       case "copy":
-        return Dialog.alert(server.name, server.target);
+        void Clipboard.setStringAsync(server.target);
+        return;
       case "remove":
         return Dialog.confirm({
           title: gt("Remove {name}?", { name: server.name }),
@@ -777,7 +736,7 @@ function McpSection({
       {groups.map((group) => (
         <View key={group.id}>
           <Text className="px-4 pt-3 text-xs uppercase text-foreground-muted">
-            {groupTitle(group.id)}
+            {mcpGroupTitle(group.id, activeName, m)}
           </Text>
           {group.servers.map((server) => {
             const model = mcpServerRowModel({

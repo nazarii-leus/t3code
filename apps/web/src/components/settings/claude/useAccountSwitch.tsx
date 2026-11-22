@@ -1,9 +1,4 @@
-import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
 import { switchConfirmLines } from "@t3tools/client-runtime/provider-accounts";
-import {
-  isAtomCommandInterrupted,
-  squashAtomCommandFailure,
-} from "@t3tools/client-runtime/state/runtime";
 import type { EnvironmentId, ProviderAccount, ServerProvider } from "@t3tools/contracts";
 import { T, useGT, useMessages } from "gt-react";
 import { createContext, useState } from "react";
@@ -24,6 +19,7 @@ import {
 } from "../../ui/alert-dialog";
 import { Button } from "../../ui/button";
 import { toastManager } from "../../ui/toast";
+import { commandSucceeded } from "./commandSucceeded";
 
 const WORKING = new Set(["starting", "running", "waiting"]);
 
@@ -92,20 +88,10 @@ export function useAccountSwitch() {
         ...(providerAccountsClientId ? { clientId: providerAccountsClientId } : {}),
       },
     });
-    if (result._tag === "Success") {
+    if (commandSucceeded(result, gt("Couldn't switch the Claude account"), m)) {
       toastManager.add({
         type: "success",
         title: gt("Claude now uses {name}", { name: account.name }),
-      });
-    } else if (!isAtomCommandInterrupted(result)) {
-      const failure = squashAtomCommandFailure(result);
-      toastManager.add({
-        type: "error",
-        title: gt("Couldn't switch the Claude account"),
-        description:
-          failure instanceof Error
-            ? (thrownErrorMessage(failure, m) ?? failure.message)
-            : undefined,
       });
     }
   }

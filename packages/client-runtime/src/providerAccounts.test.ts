@@ -7,6 +7,7 @@ import type {
 
 import {
   accountRowModel,
+  autoSwitchStatusText,
   mcpServerRowModel,
   switchConfirmLines,
   switchReasonText,
@@ -269,6 +270,37 @@ describe("switchConfirmLines", () => {
         formatTime: String,
       }),
     ).toEqual([]);
+  });
+});
+
+describe("autoSwitchStatusText", () => {
+  const a = account({ id: "a", active: true });
+  const b = account({ id: "b", name: "Team" });
+  it.each([
+    [
+      "names the next account",
+      snapshot([a, b], { autoSwitch: { targetId: "b", blockedReason: null, pausedUntil: null } }),
+      "Next: Team.",
+    ],
+    ["has no room left", snapshot([a, b]), "No other account has room left."],
+    [
+      "has one account",
+      snapshot([a]),
+      "Add another account to keep working when this one runs out of usage.",
+    ],
+    [
+      "is paused",
+      snapshot([a, b], {
+        autoSwitch: {
+          targetId: "b",
+          blockedReason: "paused",
+          pausedUntil: "2026-11-21T13:00:00.000Z",
+        },
+      }),
+      "Automatic switching paused until 13:00: 5 switches in an hour.",
+    ],
+  ] as const)("%s", (_name, value, expected) => {
+    expect(autoSwitchStatusText(value, (iso) => iso.slice(11, 16))).toBe(expected);
   });
 });
 

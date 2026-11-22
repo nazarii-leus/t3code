@@ -286,6 +286,51 @@ export function switchConfirmLines(input: {
   return lines;
 }
 
+const ACCOUNT_MENU_LABELS: Record<AccountMenuItem, string> = {
+  use: msg("Use"),
+  "check-usage": msg("Check usage"),
+  "sign-in": msg("Sign in"),
+  "sign-in-again": msg("Sign in again"),
+  "auto-switch-off": msg("Leave out of automatic switching"),
+  "auto-switch-on": msg("Include in automatic switching"),
+  rename: msg("Rename…"),
+  "copy-email": msg("Copy email"),
+  "sign-out": msg("Sign out…"),
+  remove: msg("Remove…"),
+};
+
+export const accountMenuLabel = (item: AccountMenuItem, resolve: MFunctionType = mFallback) =>
+  resolve(ACCOUNT_MENU_LABELS[item]);
+
+/** "From → To" of a history entry; a first sign-in has no "from". */
+export const switchAccountsText = (
+  entry: Pick<ProviderAccountSwitchEntry, "fromName" | "toName">,
+) => (entry.fromName ? `${entry.fromName} → ${entry.toName}` : entry.toName);
+
+/** What automatic switching will do next, under the automatic-switching row. */
+export function autoSwitchStatusText(
+  snapshot: ProviderAccountsSnapshot,
+  formatTime: (iso: string) => string,
+  resolve: MFunctionType = mFallback,
+): string {
+  const { autoSwitch } = snapshot;
+  if (autoSwitch.blockedReason === "paused" && autoSwitch.pausedUntil) {
+    return resolve(
+      msg("Automatic switching paused until {time}: 5 switches in an hour.", {
+        time: formatTime(autoSwitch.pausedUntil),
+      }),
+    );
+  }
+  const ready = snapshot.accounts.filter((account) => account.state === "ready").length;
+  if (autoSwitch.blockedReason === "one_account" || ready < 2) {
+    return resolve(msg("Add another account to keep working when this one runs out of usage."));
+  }
+  const next = snapshot.accounts.find((account) => account.id === autoSwitch.targetId);
+  return next
+    ? resolve(msg("Next: {name}.", { name: next.name }))
+    : resolve(msg("No other account has room left."));
+}
+
 /** The muted reason of one history entry. */
 export function switchReasonText(
   entry: ProviderAccountSwitchEntry,
@@ -324,6 +369,21 @@ export type McpMenuItem =
   | "edit"
   | "copy"
   | "remove";
+
+const MCP_MENU_LABELS: Record<McpMenuItem, string> = {
+  check: msg("Check again"),
+  reconnect: msg("Reconnect in running threads"),
+  "sign-in": msg("Sign in"),
+  "sign-out": msg("Sign out"),
+  "turn-off": msg("Turn off in this project"),
+  "turn-on": msg("Turn on"),
+  edit: msg("Edit…"),
+  copy: msg("Copy address"),
+  remove: msg("Remove…"),
+};
+
+export const mcpMenuLabel = (item: McpMenuItem, resolve: MFunctionType = mFallback) =>
+  resolve(MCP_MENU_LABELS[item]);
 
 export interface McpRowModel {
   readonly status: string;
@@ -428,6 +488,30 @@ export function mcpServerRowModel(input: {
         ],
         managedReason,
       };
+  }
+}
+
+export type McpGroupId = ReturnType<typeof mcpServerGroups>[number]["id"];
+
+/** A group's heading; claude.ai connectors belong to the active account. */
+export function mcpGroupTitle(
+  id: McpGroupId,
+  activeAccountName: string,
+  resolve: MFunctionType = mFallback,
+): string {
+  switch (id) {
+    case "project":
+      return resolve(msg("This project"));
+    case "user":
+      return resolve(msg("Yours, all projects"));
+    case "plugin":
+      return resolve(msg("From plugins"));
+    case "claudeai":
+      return resolve(msg("From claude.ai · {name}", { name: activeAccountName }));
+    case "managed":
+      return resolve(msg("Set by your organization"));
+    case "other":
+      return resolve(msg("Other"));
   }
 }
 
