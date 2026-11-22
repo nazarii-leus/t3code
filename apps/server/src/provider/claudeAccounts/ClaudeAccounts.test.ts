@@ -1,7 +1,13 @@
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
-import type { ProviderAccount } from "@t3tools/contracts";
+import { ProviderInstanceId, type ProviderAccount, type ServerProvider } from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
+import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
 
-import { pickAccountSwitchTarget } from "./ClaudeAccounts.ts";
+import { makeClaudeAccounts, pickAccountSwitchTarget } from "./ClaudeAccounts.ts";
+import { ClaudeAccountStoreError } from "./ClaudeAccountStore.ts";
 
 const NOW = Date.parse("2026-11-21T12:00:00.000Z");
 const account = (
@@ -113,5 +119,127 @@ describe("pickAccountSwitchTarget", () => {
       },
     ]);
     expect(pick([fableOut])).toBeUndefined();
+  });
+});
+
+const login = (accountUuid: string, organizationUuid: string, refreshToken: string) => ({
+  claudeAiOauth: {
+    accessToken: `access-${refreshToken}`,
+    refreshToken,
+    expiresAt: 4_102_444_800_000,
+    scopes: ["user:inference"],
+    accountUuid,
+    organizationUuid,
+    subscriptionType: "max",
+  },
+  organizationUuid,
+});
+
+/** A Claude folder with A signed in and B, C stored; C's probe fails with a timeout. */
+const service = Effect.fn("service")(function* () {
+  const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const root = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-claude-service-" });
+  const folder = path.join(root, "claude");
+  const storeDir = path.join(root, "store");
+  const write = (file: string, value: unknown) =>
+    fileSystem
+      .makeDirectory(path.dirname(file), { recursive: true })
+      .pipe(Effect.andThen(fileSystem.writeFileString(file, JSON.stringify(value))));
+  yield* write(path.join(folder, ".credentials.json"), login("acct-a", "org", "rt-a"));
+  yield* write(
+    path.join(storeDir, "acct-b.org", ".credentials.json"),
+    login("acct-b", "org", "rt-b"),
+  );
+  yield* write(
+    path.join(storeDir, "acct-c.org", ".credentials.json"),
+    login("acct-c", "org", "rt-c"),
+  );
+  const probed: string[] = [];
+  const accounts = yield* makeClaudeAccounts({
+    instanceId: ProviderInstanceId.make("claudeAgent"),
+    folder,
+    profileFile: path.join(root, ".claude.json"),
+    storeDir,
+    platform: "linux",
+    locks: { withLocks: (_dir, effect) => effect },
+    probeStored: (accountDir) => {
+      probed.push(path.basename(accountDir));
+      return accountDir.endsWith("acct-c.org")
+        ? Effect.fail(new ClaudeAccountStoreError({ operation: "probe", detail: "timed out" }))
+        : Effect.succeed({
+            models: ["claude-fable-5-2"],
+            usageLimits: {
+              checkedAt: "2026-11-21T12:00:00.000Z",
+              windows: [{ id: "five_hour", kind: "session", label: "5-hour", usedPercent: 20 }],
+            },
+          });
+    },
+    runClaude: () => Effect.succeed({ code: 0 }),
+    // The active account is out of usage until long after the test clock.
+    activeSnapshot: Effect.succeed({
+      version: "2.1.328",
+      auth: { status: "authenticated" },
+      models: [{ slug: "claude-fable-5-2" }],
+      usageLimits: {
+        checkedAt: "2026-11-21T12:00:00.000Z",
+        windows: [
+          {
+            id: "five_hour",
+            kind: "session",
+            label: "5-hour",
+            usedPercent: 100,
+            resetsAt: "2100-01-01T00:00:00.000Z",
+          },
+        ],
+      },
+    } as unknown as ServerProvider),
+    refreshActive: Effect.void,
+  });
+  const folderToken = fileSystem
+    .readFileString(path.join(folder, ".credentials.json"))
+    .pipe(Effect.map((text) => JSON.parse(text).claudeAiOauth.refreshToken as string));
+  return { accounts, probed, folderToken };
+});
+
+it.layer(NodeServices.layer)("makeClaudeAccounts", (it) => {
+  describe("stored accounts are probed and switched to at a limit", () => {
+    it.effect("a probe's usage lands on its row; a failed probe shows its reason", () =>
+      Effect.gen(function* () {
+        const t = yield* service();
+        const snapshot = yield* t.accounts.checkUsage(null);
+        const row = (id: string) => snapshot.accounts.find((account) => account.id === id);
+        expect(row("acct-b.org")?.usageLimits?.windows[0]?.usedPercent).toBe(20);
+        expect(row("acct-c.org")?.usageError).toBe("timed out");
+        expect(row("acct-c.org")?.state).toBe("ready");
+        expect(t.probed).toContain("acct-b.org");
+      }),
+    );
+
+    it.effect(
+      "switches from the limited account, and a later failure report doesn't switch again",
+      () =>
+        Effect.gen(function* () {
+          const t = yield* service();
+          yield* t.accounts.checkUsage(null);
+          const failedAt = DateTime.formatIso(yield* DateTime.now);
+          const input = {
+            failedAt,
+            windowId: "five_hour",
+            windowLabel: "5-hour",
+            resetAt: "2100-01-01T00:00:00.000Z",
+            modelsInUse: ["claude-fable-5-2"],
+          };
+          const first = yield* t.accounts.switchForLimit(input);
+          expect(first).toBeDefined();
+          expect(yield* t.folderToken).toBe("rt-b");
+          const after = yield* t.accounts.snapshot;
+          expect(after.history[0]?.reason).toBe("usage_limit");
+          // The same failure seen again (another thread, the sweep): the thread continues on B.
+          const second = yield* t.accounts.switchForLimit(input);
+          expect(second).toEqual(first);
+          expect(yield* t.folderToken).toBe("rt-b");
+        }),
+    );
   });
 });

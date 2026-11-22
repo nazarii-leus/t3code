@@ -15,7 +15,7 @@ sign-ins, and conversations, so a thread continues with its history after a swit
 - **Add account** signs in on Claude's page. The page signs in the account your browser is using,
   so open the link in a private window to add a different one. When T3 Code runs on another
   machine, the browser cannot reach the final localhost page; paste that page's address into the
-  sign-in panel. A new account does not become active until you choose **Use**.
+  sign-in panel. A new account becomes active only when no account is; otherwise choose **Use**.
 - **Use** makes an account active. When Claude threads are working, a confirmation names them:
   each finishes its current step, then continues on the new account. It also says when the account
   can't run a model in use or is out of usage.
@@ -29,7 +29,7 @@ With **Switch accounts at usage limits** on, T3 Code makes the next account acti
 active one runs out of usage and continues the stopped threads (see [Usage limits](#usage-limits)).
 The Accounts section shows which account is next and the last switches.
 
-Switching needs Claude Code 2.1.328 or newer on Linux. On macOS, Claude keeps its login in the
+Switching needs Claude Code 2.1.328 or a later 2.1 release, on Linux. On macOS, Claude keeps its login in the
 Keychain, and on Windows T3 Code can't sign Claude in yet, so there T3 Code manages one Claude
 account and the list shows why. On mobile, **Settings > Providers > Claude** offers the same list.
 
@@ -78,7 +78,7 @@ leaving `HOME` and the system keychain location intact. Use the same variable fo
 command. Setting `HOME` instead can put credentials where this provider will not find them. A
 separate folder has its own accounts and conversations: a thread that moves to it starts a new
 session and receives a handoff of the recent conversation. Two Claude providers can't use the
-same folder: the second one says so and signs nothing in.
+same folder: the second one says so and signs no account in.
 
 For presets that differ only in API keys or endpoints, use the instance's
 **Environment variables**. Variable assignments do not belong in **Launch arguments**.

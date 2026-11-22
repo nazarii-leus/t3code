@@ -825,7 +825,8 @@ export const makeClaudeAccounts = Effect.fn("ClaudeAccounts.make")(function* (
   const activeAt = (history: StoreIndex["history"], currentId: string | null, atMs: number) => {
     let account = currentId;
     for (const entry of history) {
-      if (Date.parse(entry.at) <= atMs) break;
+      // A switch at the failure's own instant came after it: the run used the account before.
+      if (Date.parse(entry.at) < atMs) break;
       account = entry.fromId;
     }
     return account;

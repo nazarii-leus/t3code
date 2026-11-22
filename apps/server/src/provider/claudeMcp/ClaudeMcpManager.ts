@@ -671,10 +671,18 @@ export const makeClaudeMcpManager = Effect.fn("ClaudeMcpManager.make")(function*
           );
           if (added.code !== 0) {
             if (mode === "replace" && previous) {
-              yield* addJson(input.name, input.scope, cwd, previous.config, keptSecret);
+              const restored = yield* addJson(
+                input.name,
+                input.scope,
+                cwd,
+                previous.config,
+                keptSecret,
+              );
               return yield* failure(
                 "save",
-                `Claude couldn't save the server: ${lastLine(added.output)}. The old settings were kept.`,
+                restored.code === 0
+                  ? `Claude couldn't save the server: ${lastLine(added.output)}. The old settings were kept.`
+                  : `Claude couldn't save the server: ${lastLine(added.output)}. Restoring the old settings failed too (${lastLine(restored.output)}); add the server again.`,
               );
             }
             return yield* failure(

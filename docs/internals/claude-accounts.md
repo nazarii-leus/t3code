@@ -36,9 +36,9 @@ folder holds and finishes or rolls back the switch the journal describes. The
 [store tests](../../apps/server/src/provider/claudeAccounts/ClaudeAccountStore.test.ts) cover each
 crash point.
 
-Switching runs only on Linux with Claude Code 2.1.328 or newer. On macOS the login is in the
-Keychain and on Windows T3 cannot sign Claude in, so the snapshot reports `supported: false` with a
-reason and the list holds the one signed-in account.
+Switching runs with Claude Code 2.1.328 or a later 2.1 release; another version turns it off until
+checked. On macOS the login is in the Keychain and on Windows T3 cannot sign Claude in, so the
+snapshot reports `supported: false` with a reason, and the provider's own sign-in is used there.
 
 ## The accounts service
 
@@ -50,12 +50,12 @@ login` in a terminal) is adopted as the active account with the reason `outside`
 
 Sign-in uses the provider auth flow with the method ids `account:add` and `account:renew:<id>`:
 Claude signs in inside a scratch folder, and `adoptSignIn` stores the login as a new or renewed
-account. A new account does not become active.
+account. A new account becomes active only when no account is.
 
 `switchForLimit` picks the next account for automatic switching
 ([`pickAccountSwitchTarget`](../../apps/server/src/provider/claudeAccounts/ClaudeAccounts.ts)):
-an account that is ready, included in automatic switching, has room in every window the failed
-run's models use, and offers those models; among them, the soonest weekly reset first. More than
+an account that is ready, included in automatic switching, not marked limited, with no window
+used up, and offering every model in use; among them, the soonest weekly reset first. More than
 five automatic switches in an hour pause automatic switching for the hour.
 
 ## Usage limits and continuing threads
@@ -83,7 +83,7 @@ threads keep running; clients map them with `resolveProviderInstanceAlias`. The 
 are kept as `settings.json.bak-claude-accounts`. A login that can't be moved (Claude holds its lock,
 the file can't be read) leaves its instance as it is for the next start. A Claude instance with its
 own unlinked folder stays a separate provider with its own list; a second instance on a folder that
-already has a provider gets no list and signs nothing in.
+already has a provider gets no list and signs no account in (MCP sign-ins still work).
 
 ## MCP servers
 
