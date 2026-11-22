@@ -1,4 +1,9 @@
-import { ClaudeSettings, ProviderDriverKind, type ServerProvider } from "@t3tools/contracts";
+import {
+  ClaudeSettings,
+  ProviderDriverKind,
+  type ProviderAccountsSnapshot,
+  type ServerProvider,
+} from "@t3tools/contracts";
 import * as Cache from "effect/Cache";
 import type * as Cause from "effect/Cause";
 import * as Duration from "effect/Duration";
@@ -64,13 +69,29 @@ import {
 } from "./ClaudeHome.ts";
 import type { ProviderAuthController } from "@t3tools/provider-core/server/auth";
 import { makeClaudeAuth } from "./ClaudeAuth.ts";
-import {
-  materializeClaudeShadowHome,
-  resolveClaudeShadowHome,
-  type ClaudeShadowHomeError,
-} from "./ClaudeHomeLayout.ts";
+import * as SubscriptionRef from "effect/SubscriptionRef";
+import { makeClaudeAccounts, type ClaudeAccounts } from "../claudeAccounts/ClaudeAccounts.ts";
+import { claudeAccountStoreDir } from "../claudeAccounts/ClaudeAccountsMigration.ts";
+import { ClaudeAccountStoreError } from "../claudeAccounts/ClaudeAccountStore.ts";
+import * as DateTime from "effect/DateTime";
+import { claudeUsageResponseToLimits } from "../claudeUsageLimits.ts";
+import { runClaudeCommand, withClaudeMcpQuery } from "../ClaudeProvider.ts";
+import { makeClaudeMcpManager } from "../claudeMcp/ClaudeMcpManager.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { makeClaudeMaintenanceResolution } from "./ClaudeMaintenance.ts";
+
+/** Real Claude folder → the provider instance that owns its account list. */
+const claudeFolderOwners = new Map<string, string>();
+const folderTakenSnapshot = {
+  supported: false,
+  unsupportedReason: "Another Claude provider already uses this folder.",
+  accounts: [],
+  switching: null,
+  lastError: null,
+  autoSwitch: { targetId: null, blockedReason: null, pausedUntil: null },
+  history: [],
+} satisfies ProviderAccountsSnapshot;
+
 const decodeClaudeSettings = Schema.decodeSync(ClaudeSettings);
 
 const DRIVER_KIND = ProviderDriverKind.make("claudeAgent");
@@ -127,29 +148,8 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
       .current(DRIVER_KIND)
       .pipe(Effect.map(resolveClaudeModelCatalog));
     const processEnv = yield* mergeClaudeProcessEnvironment(config, environment, process.env);
-    const shadowHome = yield* resolveClaudeShadowHome(config, processEnv);
-    // A shadow home that cannot be prepared leaves the account usable and says why on its row.
-    const shadowHomeProblem = yield* Ref.make<string | undefined>(undefined);
-    const prepareShadowHome =
-      shadowHome === undefined
-        ? Effect.void
-        : materializeClaudeShadowHome(shadowHome).pipe(
-            Effect.matchEffect({
-              onFailure: (error: ClaudeShadowHomeError) =>
-                Ref.set(shadowHomeProblem, error.message).pipe(
-                  Effect.andThen(
-                    Effect.logWarning("Could not prepare the Claude shadow home.", {
-                      detail: error.message,
-                    }),
-                  ),
-                ),
-              onSuccess: () => Ref.set(shadowHomeProblem, undefined),
-            }),
-          );
-    yield* prepareShadowHome;
-    // Everything below runs Claude in the account's own home.
-    const accountConfig =
-      shadowHome === undefined ? config : { ...config, homePath: shadowHome.shadowHomePath };
+    // Every account of this provider uses this one folder; switching moves only the login.
+    const accountConfig = config;
     const fallbackContinuationIdentity = defaultProviderContinuationIdentity({
       driverKind: DRIVER_KIND,
       instanceId,
@@ -204,6 +204,8 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
     // Retain reports until the registry subscribes; end its listener on teardown.
     const workspaceRescans = yield* Queue.unbounded<string, Cause.Done>();
     yield* Effect.addFinalizer(() => Queue.end(workspaceRescans));
+    // Usage events of requests sent before a switch must not land on the new account.
+    const usageQuiet = yield* Ref.make(false);
     const orchestrationAdapter = yield* createClaudeAdapterV2(
       {
         instanceId,
@@ -215,7 +217,10 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
       },
       {
         scopedLimitNames,
-        onUsageLimits: (update) => snapshot.applyUsageLimits(update),
+        onUsageLimits: (update) =>
+          Ref.get(usageQuiet).pipe(
+            Effect.flatMap((quiet) => (quiet ? Effect.void : snapshot.applyUsageLimits(update))),
+          ),
         onSessionInit: (cwd) => Queue.offer(workspaceRescans, cwd).pipe(Effect.asVoid),
         modelCatalog,
         routeModelCatalog: modelRoutes.route,
@@ -314,21 +319,10 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
               : {}),
           };
 
-    const withShadowHomeProblem = (provider: ServerProvider) =>
-      Ref.get(shadowHomeProblem).pipe(
-        Effect.map((problem) =>
-          problem !== undefined && provider.status === "ready"
-            ? { ...provider, status: "warning" as const, message: problem }
-            : provider,
-        ),
-      );
-
     // Set once the sign-in exists; each check re-reads the account's MCP servers and their sign-ins.
     const authRef = yield* Ref.make<ProviderAuthController | undefined>(undefined);
-    const checkProvider = prepareShadowHome.pipe(
-      Effect.andThen(
-        Ref.get(authRef).pipe(Effect.flatMap((auth) => auth?.refreshMethods ?? Effect.void)),
-      ),
+    const checkProvider = Ref.get(authRef).pipe(
+      Effect.flatMap((auth) => auth?.refreshMethods ?? Effect.void),
       Effect.andThen(catalogService.refreshInBackground),
       Effect.andThen(
         modelCatalog.pipe(
@@ -355,7 +349,6 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
           ),
           Effect.map(stampIdentity),
           Effect.map(withSignIn),
-          Effect.flatMap(withShadowHomeProblem),
         ),
       ),
       // Disabled, failed version checks and interruption never reach the probe.
@@ -469,15 +462,180 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
       ),
     );
 
+    const platform = yield* HostProcess.Platform;
+    const realFolder = yield* fileSystem.realPath(configDir).pipe(
+      Effect.tapError((cause) =>
+        Effect.logWarning("Could not resolve the Claude folder; its own path names the store.", {
+          instanceId,
+          folder: configDir,
+          cause,
+        }),
+      ),
+      Effect.orElseSucceed(() => configDir),
+    );
+    const storeDir = claudeAccountStoreDir(stateDir, realFolder);
+    const logSetupFailure = (what: string) =>
+      Effect.tapError((cause: unknown) =>
+        Effect.logWarning(`Could not prepare the Claude account store: ${what}.`, {
+          instanceId,
+          storeDir,
+          cause,
+        }),
+      );
+    yield* fileSystem
+      .makeDirectory(storeDir, { recursive: true, mode: 0o700 })
+      .pipe(logSetupFailure("its folder"), Effect.ignore);
+    yield* fileSystem
+      .writeFileString(path.join(storeDir, "folder.txt"), configDir)
+      .pipe(logSetupFailure("folder.txt"), Effect.ignore);
+    // One provider owns a Claude folder's account list; a second one on the same folder signs nothing in.
+    const folderOwner = claudeFolderOwners.get(realFolder);
+    const ownsFolder = folderOwner === undefined || folderOwner === instanceId;
+    if (ownsFolder) {
+      claudeFolderOwners.set(realFolder, instanceId);
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          if (claudeFolderOwners.get(realFolder) === instanceId)
+            claudeFolderOwners.delete(realFolder);
+        }),
+      );
+    }
+    const refreshActive = Cache.invalidateAll(capabilitiesProbeCache).pipe(
+      Effect.andThen(snapshot.refresh),
+      Effect.asVoid,
+    );
+    const makeAccounts = makeClaudeAccounts({
+      instanceId,
+      folder: configDir,
+      profileFile: accountConfigPath,
+      storeDir,
+      platform,
+      probeStored: (accountDir) =>
+        probeClaudeCapabilities(
+          { ...effectiveConfig, homePath: accountDir },
+          processEnv,
+          accountDir,
+        ).pipe(
+          Effect.flatMap((capabilities) =>
+            DateTime.now.pipe(
+              Effect.map((now) => ({
+                models: capabilities.models?.map((model) => model.value),
+                usageLimits: capabilities.usage
+                  ? claudeUsageResponseToLimits({
+                      response: capabilities.usage,
+                      checkedAt: capabilities.usageCheckedAt ?? DateTime.formatIso(now),
+                    }).limits
+                  : undefined,
+              })),
+            ),
+          ),
+          Effect.mapError(
+            (cause) =>
+              new ClaudeAccountStoreError({
+                operation: "probe",
+                detail: cause.message || "Claude could not check this account.",
+                cause,
+              }),
+          ),
+          Effect.provideService(FileSystem.FileSystem, fileSystem),
+          Effect.provideService(Path.Path, path),
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+        ),
+      runClaude: (dir, args) =>
+        runClaudeCommand({ ...effectiveConfig, homePath: dir }, args, processEnv, dir).pipe(
+          Effect.map((result) => ({ code: result.code })),
+          Effect.mapError(
+            (cause) =>
+              new ClaudeAccountStoreError({ operation: "command", detail: cause.message, cause }),
+          ),
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+          Effect.provideService(Path.Path, path),
+        ),
+      activeSnapshot: snapshot.getSnapshot,
+      refreshActive,
+      usageQuiet,
+    }).pipe(
+      Effect.provideService(FileSystem.FileSystem, fileSystem),
+      Effect.provideService(Path.Path, path),
+    );
+    const accounts: ClaudeAccounts | undefined = ownsFolder ? yield* makeAccounts : undefined;
+    if (!ownsFolder) {
+      yield* Effect.logWarning("Another Claude provider already uses this Claude folder.", {
+        instanceId,
+        owner: folderOwner,
+        folder: configDir,
+      });
+    }
+    // The provider snapshot carries the account list; it is re-sent when either side changes.
+    const accountsRef = yield* SubscriptionRef.make(
+      accounts ? yield* accounts.snapshot : folderTakenSnapshot,
+    );
+    if (accounts) {
+      yield* Effect.forkScoped(
+        Stream.runForEach(accounts.changes, (next) => SubscriptionRef.set(accountsRef, next)),
+      );
+    }
+    const withAccounts = (provider: ServerProvider) =>
+      SubscriptionRef.get(accountsRef).pipe(
+        Effect.map((list) => ({ ...provider, accounts: list })),
+      );
+    const snapshotWithAccounts = {
+      ...snapshot,
+      getSnapshot: snapshot.getSnapshot.pipe(Effect.flatMap(withAccounts)),
+      refresh: snapshot.refresh.pipe(Effect.flatMap(withAccounts)),
+      streamChanges: Stream.zipLatestWith(
+        snapshot.streamChanges,
+        SubscriptionRef.changes(accountsRef),
+        (provider, list) => ({ ...provider, accounts: list }),
+      ),
+    } satisfies typeof snapshot;
+
+    // Accounts are re-rendered when the active account's own snapshot changes (its usage, its login).
+    if (accounts) {
+      yield* Effect.forkScoped(Stream.runForEach(snapshot.streamChanges, () => accounts.refresh));
+    }
+    const neutralCwd = path.join(storeDir, "mcp-cwd");
+    yield* fileSystem
+      .makeDirectory(neutralCwd, { recursive: true, mode: 0o700 })
+      .pipe(logSetupFailure("mcp-cwd"), Effect.ignore);
+    const claudeEnvironment = yield* makeClaudeEnvironment(effectiveConfig, processEnv);
+    const mcp = yield* makeClaudeMcpManager({
+      instanceId,
+      folder: configDir,
+      profileFile: accountConfigPath,
+      neutralCwd,
+      binaryPath: effectiveConfig.binaryPath,
+      environment: claudeEnvironment,
+      query: (input) =>
+        withClaudeMcpQuery({
+          claudeSettings: effectiveConfig,
+          environment: processEnv,
+          cwd: input.cwd,
+          ...(input.only ? { only: input.only } : {}),
+          use: input.use,
+        }).pipe(
+          Effect.provideService(FileSystem.FileSystem, fileSystem),
+          Effect.provideService(Path.Path, path),
+        ),
+      activeAccountName: accounts
+        ? accounts.snapshot.pipe(
+            Effect.map((list) => list.accounts.find((account) => account.active)?.name ?? null),
+          )
+        : Effect.succeed(null),
+    }).pipe(
+      Effect.provideService(FileSystem.FileSystem, fileSystem),
+      Effect.provideService(Path.Path, path),
+    );
+
     const auth = signInAvailable
       ? yield* makeClaudeAuth({
           instanceId,
           binaryPath: effectiveConfig.binaryPath,
           environment: yield* makeClaudeEnvironment(effectiveConfig, processEnv),
           configDir,
-          accountFile: accountConfigPath,
           cwd: stateDir,
-          accountEmail: effectiveConfig.accountEmail,
+          ...(accounts ? { accounts } : { folderTaken: true }),
+          mcp,
           refresh: Cache.invalidateAll(capabilitiesProbeCache).pipe(
             Effect.andThen(snapshot.refresh),
           ),
@@ -489,6 +647,8 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
       instanceId,
       driverKind: DRIVER_KIND,
       ...(auth ? { auth } : {}),
+      ...(accounts ? { accounts } : {}),
+      mcp,
       continuationIdentity: {
         ...fallbackContinuationIdentity,
         continuationKey: continuationGroupKey,
@@ -496,7 +656,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
       displayName,
       accentColor,
       enabled,
-      snapshot,
+      snapshot: snapshotWithAccounts,
       invalidateCaches: Cache.invalidateAll(capabilitiesProbeCache),
       workspaceRescans: Stream.fromQueue(workspaceRescans),
       snapshotForCwd: (cwd: string) =>

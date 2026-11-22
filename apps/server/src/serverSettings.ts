@@ -45,7 +45,9 @@ import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 import { writeFileStringAtomically } from "@t3tools/shared/atomicWrite";
 import { resolveSymlinkTarget } from "@t3tools/shared/symlink";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as ServerConfig from "./config.ts";
+import { migrateClaudeAccountFolders } from "./provider/claudeAccounts/ClaudeAccountsMigration.ts";
 import { type DeepPartial, deepMerge } from "@t3tools/shared/Struct";
 import { fromJsonStringPretty, fromLenientJson } from "@t3tools/shared/schemaJson";
 import {
@@ -669,7 +671,7 @@ function foldLegacyProjectSettings(
 }
 
 const make = Effect.gen(function* () {
-  const { settingsPath } = yield* ServerConfig.ServerConfig;
+  const { settingsPath, stateDir } = yield* ServerConfig.ServerConfig;
   const fs = yield* FileSystem.FileSystem;
   const pathService = yield* Path.Path;
   const secretStore = yield* ServerSecretStore.ServerSecretStore;
@@ -915,8 +917,44 @@ const make = Effect.gen(function* () {
     const sourceControlMigration = hasLegacySourceControl
       ? migrateLegacySourceControlSettings(folded, legacySourceControl)
       : { settings: folded, secretMoves: [] };
+    // Claude account folders become accounts of the one Claude folder (kept, aliased, logins moved).
+    // Only on Linux, where switching works; the old settings are kept aside first, or nothing moves.
+    const hasClaudeAccountInstances = Object.entries(
+      sourceControlMigration.settings.providerInstances,
+    ).some(([id, entry]) => entry.driver === "claudeAgent" && id !== "claudeAgent");
+    const backupPath = `${settingsPath}.bak-claude-accounts`;
+    const backedUp =
+      settingsFileTrusted && hasClaudeAccountInstances && (yield* HostProcess.Platform) === "linux"
+        ? yield* fs.exists(backupPath).pipe(
+            Effect.flatMap((there) =>
+              there
+                ? Effect.succeed(true)
+                : fs.copyFile(settingsPath, backupPath).pipe(Effect.as(true)),
+            ),
+            Effect.catch((cause) =>
+              Effect.logWarning(
+                "Could not back up the settings; the Claude account folders are not folded.",
+                { backupPath, cause },
+              ).pipe(Effect.as(false)),
+            ),
+          )
+        : false;
+    const accountsFolded = backedUp
+      ? yield* migrateClaudeAccountFolders(sourceControlMigration.settings, {
+          stateDir,
+          homeDir: yield* HostProcess.HomeDirectory,
+          claudeConfigDir: (yield* HostProcess.Environment).CLAUDE_CONFIG_DIR,
+        }).pipe(
+          // Also a defect: T3 starts with the folders as they were rather than not at all.
+          Effect.catchCause((cause) =>
+            Effect.logWarning("Could not fold the Claude account folders.", { cause }).pipe(
+              Effect.as(sourceControlMigration.settings),
+            ),
+          ),
+        )
+      : sourceControlMigration.settings;
     const migrated = settingsFileTrusted
-      ? yield* moveInlineSettingsSecrets(sourceControlMigration.settings)
+      ? yield* moveInlineSettingsSecrets(accountsFolded)
       : folded;
     if (
       migrated !== loaded ||

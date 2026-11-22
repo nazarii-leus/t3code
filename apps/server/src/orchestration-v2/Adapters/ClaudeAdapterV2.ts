@@ -1,5 +1,9 @@
 import * as DocumentText from "../../provider/DocumentText.ts";
 import {
+  liveClaudeQueryKey,
+  trackLiveClaudeQuery,
+} from "../../provider/claudeMcp/liveClaudeQueries.ts";
+import {
   compactDynamicToolOutput,
   mcpToolResultOutput,
   toolOutputImages,
@@ -1609,6 +1613,11 @@ export const layerQueryRunner: Layer.Layer<
           catch: (cause) => queryRunnerError(cause, "query"),
         }).pipe(
           Effect.tap((queryRuntime) =>
+            Effect.sync(() =>
+              trackLiveClaudeQuery(liveClaudeQueryKey(options.env), queryRuntime, processExit),
+            ),
+          ),
+          Effect.tap((queryRuntime) =>
             restore(
               Effect.gen(function* () {
                 if (mcpServers !== undefined) {
@@ -2464,6 +2473,7 @@ export const CLAUDE_READ_ONLY_T3_MCP_ALLOWED_TOOLS: ReadonlyArray<string> = [
   "mcp__t3-code__t3_environment_read",
   "mcp__t3-code__t3_environment_links",
   "mcp__t3-code__t3_theme_read",
+  "mcp__t3-code__t3_claude_accounts",
   "mcp__t3-code__html_preview",
   "mcp__t3-code__html_render",
   "mcp__t3-code__send_to_user",

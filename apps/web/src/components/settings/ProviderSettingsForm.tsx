@@ -107,8 +107,7 @@ const PACKAGE_FIELD_TEXT: ReadonlyMap<string, string> = new Map([
   ["CODEX_HOME path", msg("CODEX_HOME path")],
   ["Shadow home path", msg("Shadow home path")],
   ["Launch arguments", msg("Launch arguments")],
-  ["CLAUDE_CONFIG_DIR path", msg("CLAUDE_CONFIG_DIR path")],
-  ["Account email", msg("Account email")],
+  ["Claude folder", msg("Claude folder")],
   ["Auto-compact after", msg("Auto-compact after")],
   ["Compact idle threads", msg("Compact idle threads")],
   ["Sign-in method", msg("Sign-in method")],
@@ -145,18 +144,8 @@ const PACKAGE_FIELD_TEXT: ReadonlyMap<string, string> = new Map([
     msg("Path to the Claude binary used by this instance."),
   ],
   [
-    "Custom Claude home and config directory. Keeps .claude.json and .claude separate.",
-    msg("Custom Claude home and config directory. Keeps .claude.json and .claude separate."),
-  ],
-  [
-    "Account-specific Claude home. Keeps the login separate while sharing settings, skills, plugins, MCP servers and chats from the CLAUDE_CONFIG_DIR path.",
-    msg(
-      "Account-specific Claude home. Keeps the login separate while sharing settings, skills, plugins, MCP servers and chats from the CLAUDE_CONFIG_DIR path.",
-    ),
-  ],
-  [
-    "Fills in Claude's sign-in page. T3 Code warns when a different account is signed in.",
-    msg("Fills in Claude's sign-in page. T3 Code warns when a different account is signed in."),
+    "All accounts of this provider use this folder. Empty means ~/.claude.",
+    msg("All accounts of this provider use this folder. Empty means ~/.claude."),
   ],
   [
     "Additional CLI arguments passed on session start.",

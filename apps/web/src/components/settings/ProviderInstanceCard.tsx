@@ -719,6 +719,8 @@ interface ProviderInstanceCardProps {
   readonly onDelete?: (() => void) | undefined;
   readonly headerAction?: ReactNode | undefined;
   readonly setup?: ReactNode;
+  /** Sections shown between the header and Setup (Claude's accounts and MCP servers). */
+  readonly accounts?: ReactNode;
   readonly runtime?: ReactNode;
   readonly hiddenModels: ReadonlyArray<string>;
   readonly favoriteModels: ReadonlyArray<string>;
@@ -794,6 +796,7 @@ export function ProviderInstanceCard({
   onDelete,
   headerAction,
   setup,
+  accounts,
   runtime,
   hiddenModels,
   favoriteModels,
@@ -828,6 +831,10 @@ export function ProviderInstanceCard({
     ? getProviderSummary(effectiveProvider, m)
     : { headline: gt("Disabled", { $context: "provider status" }), detail: null };
   const authEmail = liveProvider?.auth.email?.trim();
+  const accountList = enabled ? liveProvider?.accounts : undefined;
+  const activeAccount = accountList?.accounts.find((account) => account.active);
+  const signedInAccounts =
+    accountList?.accounts.filter((account) => account.state !== "signed-out").length ?? 0;
   const isAuthenticated = enabled && liveProvider?.auth.status === "authenticated";
   const authLabel =
     enabled && liveProvider?.auth.status === "authenticated"
@@ -1035,32 +1042,42 @@ export function ProviderInstanceCard({
         ? gt("Unsupported")
         : gt("Limited support")
     : summary.detail;
-  const editorStatusNode =
-    isAuthenticated && authEmail ? (
-      <>
-        {needsAttention ? statusDotNode : null}
-        <span className="min-w-0 max-w-full">
-          <T>
-            Authenticated as{" "}
-            <Var>
-              <ProviderAuthEmail email={authEmail} />
-            </Var>
-          </T>
-        </span>
-        {authLabel ? <span>· {authLabel}</span> : null}
-        {inlineStatusDetail ? (
-          <span className="min-w-0 [overflow-wrap:anywhere]">· {inlineStatusDetail}</span>
-        ) : null}
-      </>
-    ) : (
-      <>
-        {statusDotNode}
-        <span>{summary.headline}</span>
-        {inlineStatusDetail ? (
-          <span className="min-w-0 [overflow-wrap:anywhere]">· {inlineStatusDetail}</span>
-        ) : null}
-      </>
-    );
+  const editorStatusNode = activeAccount ? (
+    <>
+      {needsAttention ? statusDotNode : null}
+      <span className="min-w-0 max-w-full">
+        {gt("Active account: {name}", { name: activeAccount.name })}
+      </span>
+      {activeAccount.plan ? <span>· {activeAccount.plan}</span> : null}
+      {inlineStatusDetail ? (
+        <span className="min-w-0 [overflow-wrap:anywhere]">· {inlineStatusDetail}</span>
+      ) : null}
+    </>
+  ) : isAuthenticated && authEmail ? (
+    <>
+      {needsAttention ? statusDotNode : null}
+      <span className="min-w-0 max-w-full">
+        <T>
+          Authenticated as{" "}
+          <Var>
+            <ProviderAuthEmail email={authEmail} />
+          </Var>
+        </T>
+      </span>
+      {authLabel ? <span>· {authLabel}</span> : null}
+      {inlineStatusDetail ? (
+        <span className="min-w-0 [overflow-wrap:anywhere]">· {inlineStatusDetail}</span>
+      ) : null}
+    </>
+  ) : (
+    <>
+      {statusDotNode}
+      <span>{summary.headline}</span>
+      {inlineStatusDetail ? (
+        <span className="min-w-0 [overflow-wrap:anywhere]">· {inlineStatusDetail}</span>
+      ) : null}
+    </>
+  );
   const versionAdvisoryNode = versionAdvisory ? (
     <Popover>
       <Tooltip>
@@ -1226,7 +1243,11 @@ export function ProviderInstanceCard({
                     gt("Updating · {progress}", { progress: updateProgress })
                   ) : (
                     <>
-                      {summary.headline}
+                      {!needsAttention && signedInAccounts > 0
+                        ? gt("{count, plural, one {# account} other {# accounts}}", {
+                            count: signedInAccounts,
+                          })
+                        : summary.headline}
                       {needsAttention && inlineStatusDetail ? ` · ${inlineStatusDetail}` : null}
                       {outOfUsage ? ` · ${gt("Out of usage")}` : null}
                     </>
@@ -1405,6 +1426,8 @@ export function ProviderInstanceCard({
           }
         />
       </SettingsSection>
+
+      {accounts}
 
       {setup || environmentFields.length > 0 ? (
         <SettingsSection title={gt("Setup")}>

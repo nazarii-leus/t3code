@@ -77,10 +77,13 @@ export const make = Effect.fn("ProviderAuthFlow.make")(function* (options: {
   readonly defaultMethodId?: string;
   readonly refreshMethodsAfterAuth?: boolean;
   /** Fail with ProviderSetupError containing safe text for the user, never native token data. */
+  /** A string result replaces the generic "Sign-in complete." message. */
   readonly authenticate: (
     methodId: string,
     context: ProviderAuthFlowContext,
-  ) => Effect.Effect<void, ProviderSetupError, Scope.Scope>;
+  ) => Effect.Effect<void | string, ProviderSetupError, Scope.Scope>;
+  /** Methods started by id without being listed, such as one per account or per MCP server. */
+  readonly resolveMethod?: (methodId: string) => ProviderAuthMethod | undefined;
   readonly logout: Effect.Effect<void | string, ProviderSetupError>;
   readonly removeMethod?: (methodId: string) => Effect.Effect<void, ProviderSetupError>;
   readonly timeoutMs?: number;
@@ -316,7 +319,9 @@ export const make = Effect.fn("ProviderAuthFlow.make")(function* (options: {
             const methods = yield* options.methods;
             yield* publish(flow, { methods });
             const methodId = selectedMethodId ?? options.defaultMethodId ?? methods[0]?.id;
-            const method = methods.find((candidate) => candidate.id === methodId);
+            const method =
+              methods.find((candidate) => candidate.id === methodId) ??
+              (methodId ? options.resolveMethod?.(methodId) : undefined);
             if (!methodId || !method)
               return yield* new ProviderSetupError({
                 instanceId: options.instanceId,
@@ -327,7 +332,7 @@ export const make = Effect.fn("ProviderAuthFlow.make")(function* (options: {
             flow.methodId = methodId;
             flow.connection = method.type === "connection";
             if (!flow.connection) yield* stopSessions.pipe(Effect.ensuring(stopOwnedSessions));
-            yield* options.authenticate(methodId, {
+            return yield* options.authenticate(methodId, {
               flowId: id,
               expiresAt: flow.expiresAt,
               ...(returnUrl ? { returnUrl } : {}),
@@ -393,7 +398,9 @@ export const make = Effect.fn("ProviderAuthFlow.make")(function* (options: {
                       authorizationUrl: null,
                       expiresAt: null,
                       message: Exit.isSuccess(result)
-                        ? "Sign-in complete."
+                        ? typeof result.value === "string"
+                          ? result.value
+                          : "Sign-in complete."
                         : failureMessage(result.cause),
                     });
                     active = undefined;

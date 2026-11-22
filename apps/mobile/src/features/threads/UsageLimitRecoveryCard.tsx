@@ -23,6 +23,7 @@ import { useDeadlinePassed, useNowMinuteMs } from "../../lib/clock";
 import { serverEnvironment } from "../../state/server";
 import { threadEnvironment } from "../../state/threads";
 import { useAtomCommand } from "../../state/use-atom-command";
+import { useClaudeAccountSwitch } from "../settings/useClaudeAccountSwitch";
 
 export function UsageLimitRecoveryCard({
   thread,
@@ -41,18 +42,30 @@ export function UsageLimitRecoveryCard({
   const limitedProvider = providers.find(
     (provider) => provider.instanceId === thread.modelSelection.instanceId,
   );
+  const accountSwitch = useClaudeAccountSwitch();
+  // Claude switches its own account in place; other providers switch to another instance.
+  const accounts = limitedProvider?.accounts?.supported ? limitedProvider.accounts : undefined;
+  const accountTarget = accounts?.accounts.find(
+    (account) => account.id === accounts.autoSwitch.targetId,
+  );
   const noSwitchProvider =
     settings?.switchAccountsAtUsageLimits &&
     limitedProvider &&
-    resolveLimitSwitchSelection({
-      selection: thread.modelSelection,
-      providers,
-      settings,
-      projectId: thread.projectId,
-      now: nowMs,
-    }) === null
+    (accounts
+      ? accountTarget === undefined
+      : resolveLimitSwitchSelection({
+          selection: thread.modelSelection,
+          providers,
+          settings,
+          projectId: thread.projectId,
+          now: nowMs,
+        }) === null)
       ? (PROVIDER_DISPLAY_NAMES[limitedProvider.driver] ?? limitedProvider.driver)
       : undefined;
+  const manualSwitch =
+    !settings?.switchAccountsAtUsageLimits && limitedProvider && accountTarget
+      ? { provider: limitedProvider, account: accountTarget }
+      : null;
   const resetAt = thread.runtime?.usageLimitResetAt ?? null;
   const canSchedule =
     thread.settledOverride !== "settled" &&
@@ -200,7 +213,7 @@ export function UsageLimitRecoveryCard({
             ? ` ${gt("No other {provider} account has usage left.", { provider: noSwitchProvider })}`
             : null}
         </Text>
-        {chatGptLimit || canSchedule ? (
+        {chatGptLimit || canSchedule || manualSwitch ? (
           // The margins cancel the 44pt touch height so the links sit 8pt under the text.
           <View className="-mb-3 -mt-2 flex-row flex-wrap gap-x-4">
             {chatGptLimit ? (
@@ -209,6 +222,13 @@ export function UsageLimitRecoveryCard({
                 role={action.role}
                 disabled={actionPending}
                 onPress={action.run}
+              />
+            ) : null}
+            {manualSwitch ? (
+              <RecoveryAction
+                label={gt("Switch to {name}", { name: manualSwitch.account.name })}
+                disabled={manualSwitch.provider.accounts?.switching != null}
+                onPress={() => accountSwitch.requestSwitch({ environmentId, ...manualSwitch })}
               />
             ) : null}
             {canSchedule ? (

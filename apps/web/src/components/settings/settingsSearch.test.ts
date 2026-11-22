@@ -224,7 +224,8 @@ describe("searchSettings", () => {
       ["Custom search URL", "browser-search-engine"],
       ["Native sessions", "providers"],
       ["CODEX_HOME path", "providers"],
-      ["Shadow home path", "providers"],
+      ["Claude accounts", "claude-accounts"],
+      ["MCP servers", "claude-mcp-servers"],
     ] as const) {
       expect(searchSettings(title)[0]?.id, title).toBe(id);
     }

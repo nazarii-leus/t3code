@@ -199,6 +199,11 @@ export const layer: Layer.Layer<
     const layerMutable = ProviderInstanceRegistry.layer({
       drivers: BUILT_IN_DRIVERS,
       configMap: initialConfigMap,
+      resolveAlias: (id) =>
+        serverSettings.getSettings.pipe(
+          Effect.map((current) => current.providerInstanceAliases[id]),
+          Effect.orElseSucceed(() => undefined),
+        ),
       blockedReason: (driver) =>
         ManagedProviders.disallowedDriverReason(serverSettings.managedPolicy, driver),
     }).pipe(

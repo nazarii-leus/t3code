@@ -1039,9 +1039,25 @@ export const SETTINGS_SEARCH_ITEMS = [
     to: "/settings/providers",
     searchTerms: [
       msg(
-        "agents cli codex claude cursor grok fx kiro opencode antigravity google sign in sign out install subscription instances authentication api key models configuration binary path config directory codex_home shadow home endpoint arguments environment variables display name accent color custom favorite hidden auto compact native sessions import resume",
+        "agents cli codex claude cursor grok fx kiro opencode antigravity google sign in sign out install subscription instances authentication api key models configuration binary path config directory codex_home endpoint arguments environment variables display name accent color custom favorite hidden auto compact native sessions import resume",
       ),
     ],
+  },
+  {
+    id: "claude-accounts",
+    title: msg("Claude accounts"),
+    to: "/settings/providers",
+    targetId: "claude-accounts",
+    searchTerms: [msg("account switch account login sign in subscription usage limits max team")],
+    providerSettingsOnly: true,
+  },
+  {
+    id: "claude-mcp-servers",
+    title: msg("MCP servers"),
+    to: "/settings/providers",
+    targetId: "claude-mcp-servers",
+    searchTerms: [msg("mcp server tools connector oauth plugin .mcp.json")],
+    providerSettingsOnly: true,
   },
   {
     id: "usage-providers",

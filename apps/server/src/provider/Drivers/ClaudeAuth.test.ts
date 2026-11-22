@@ -45,6 +45,8 @@ const server = http.createServer((request, response) => {
   }
   if (command === "mcp") {
     fs.writeFileSync(credentials, JSON.stringify({ mcpOAuth: { [mcpServer + "|1"]: { accessToken: "t" } } }));
+  } else {
+    fs.writeFileSync(credentials, JSON.stringify({ claudeAiOauth: { accountUuid: "acct", organizationUuid: "org", refreshToken: "rt" } }));
   }
   response.writeHead(302, { location: "https://platform.claude.com/oauth/code/success" });
   response.end(() => process.exit(0));
@@ -67,7 +69,12 @@ const phase = (
     Effect.map(Option.getOrThrow),
   );
 
-const harness = Effect.fn("ClaudeAuth.test.harness")(function* (env: Record<string, string> = {}) {
+const harness = Effect.fn("ClaudeAuth.test.harness")(function* (
+  env: Record<string, string> = {},
+  extras: (
+    directory: string,
+  ) => Pick<Parameters<typeof makeClaudeAuth>[0], "accounts" | "mcp" | "folderTaken"> = () => ({}),
+) {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const directory = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3code-claude-auth-" });
@@ -92,9 +99,8 @@ const harness = Effect.fn("ClaudeAuth.test.harness")(function* (env: Record<stri
     binaryPath,
     environment: { ...process.env, STUB_LOG: log, CLAUDE_CONFIG_DIR: configDir, ...env },
     configDir,
-    accountFile: path.join(configDir, ".claude.json"),
     cwd: directory,
-    accountEmail: "work@example.com",
+    ...extras(directory),
     // Signed in after a login, signed out after a logout, as the probe would report.
     refresh: fileSystem.readFileString(log).pipe(
       Effect.orDie,
@@ -149,7 +155,7 @@ describe("ClaudeAuth", () => {
 
       yield* auth.logout(Effect.void);
       assert.deepStrictEqual((yield* calls).trim().split("\n"), [
-        "auth login --claudeai --email work@example.com",
+        "auth login --claudeai",
         "auth logout",
       ]);
     }).pipe(Effect.scoped, Effect.provide(services)),
@@ -166,19 +172,18 @@ describe("ClaudeAuth", () => {
       );
     }).pipe(Effect.scoped, Effect.provide(services)),
   );
-  it.live("signs an MCP server in through a terminal, then out again", () =>
+  it.live("signs an MCP server in by its key, in that server's folder, then out again", () =>
     Effect.gen(function* () {
-      const { auth, calls } = yield* harness();
-      const connection = (description: string) =>
-        auth.subscribe(owner).pipe(
-          Stream.map((state) => state.methods?.find((method) => method.id === "mcp:jira")),
-          Stream.filter((method) => method?.description === description),
-          Stream.runHead,
-          Effect.map(Option.getOrThrow),
-        );
-      assert.strictEqual((yield* connection("Not signed in"))?.type, "connection");
+      const signedIn: string[] = [];
+      const { auth, calls } = yield* harness({}, (directory) => ({
+        mcp: {
+          signInTarget: (key: string) =>
+            key === "user:-:jira" ? { name: "jira", cwd: directory } : undefined,
+          afterSignIn: (key: string) => Effect.sync(() => signedIn.push(key)),
+        } as unknown as NonNullable<Parameters<typeof makeClaudeAuth>[0]["mcp"]>,
+      }));
 
-      yield* auth.start(owner, undefined, "mcp:jira");
+      yield* auth.start(owner, undefined, "mcp:user:-:jira");
       const waiting = yield* phase(auth, "waiting");
       assert(waiting.interaction?.type === "browser");
       const port = new URL(new URL(waiting.interaction.url).searchParams.get("redirect_uri") ?? "")
@@ -187,16 +192,134 @@ describe("ClaudeAuth", () => {
         flowId: waiting.flowId ?? "",
         callbackUrl: `http://localhost:${port}/callback?code=c&state=stub-state`,
       });
+      const done = yield* phase(auth, "succeeded");
+      assert.strictEqual(done.methodId, "mcp:user:-:jira");
+      assert.strictEqual(done.message, "Signed in to jira.");
 
-      assert.strictEqual((yield* phase(auth, "succeeded")).methodId, "mcp:jira");
-      assert.isTrue((yield* connection("Signed in"))?.canRemove);
-
-      yield* auth.removeMethod!("mcp:jira");
-      yield* connection("Not signed in");
+      yield* auth.removeMethod!("mcp:user:-:jira");
+      assert.deepStrictEqual(signedIn, ["user:-:jira", "user:-:jira"]);
       assert.deepStrictEqual((yield* calls).trim().split("\n"), [
         "mcp login jira",
         "mcp logout jira",
       ]);
+    }).pipe(Effect.scoped, Effect.provide(services)),
+  );
+
+  /** An account list whose sign-ins land in a scratch folder the test can see. */
+  const scratchAccounts = (
+    fileSystem: FileSystem.FileSystem,
+    path: Path.Path,
+    directory: string,
+    seen: { scratch?: string; login?: string; removed?: boolean },
+    state: { readonly supported: boolean; readonly activeId: string | null },
+  ) =>
+    ({
+      snapshot: Effect.succeed({ supported: state.supported, accounts: [] }),
+      activeId: Effect.succeed(state.activeId),
+      newScratchDir: Effect.gen(function* () {
+        const scratch = path.join(directory, "scratch");
+        yield* fileSystem.makeDirectory(scratch).pipe(Effect.orDie);
+        seen.scratch = scratch;
+        return scratch;
+      }),
+      adoptSignIn: (scratch: string) =>
+        fileSystem.readFileString(path.join(scratch, ".credentials.json")).pipe(
+          Effect.orDie,
+          Effect.map((text) => {
+            seen.login = text;
+            return "Added Max 20x.";
+          }),
+        ),
+      removeScratchDir: () => Effect.sync(() => (seen.removed = true)),
+    }) as unknown as NonNullable<Parameters<typeof makeClaudeAuth>[0]["accounts"]>;
+
+  const signInThroughBrowser = Effect.fn("signInThroughBrowser")(function* (
+    auth: Effect.Success<ReturnType<typeof harness>>["auth"],
+    methodId: string | undefined,
+  ) {
+    yield* auth.start(owner, undefined, methodId);
+    const waiting = yield* phase(auth, "waiting");
+    assert(waiting.interaction?.type === "browser");
+    const port = new URL(new URL(waiting.interaction.url).searchParams.get("redirect_uri") ?? "")
+      .port;
+    yield* auth.complete(owner, {
+      flowId: waiting.flowId ?? "",
+      callbackUrl: `http://localhost:${port}/callback?code=c&state=stub-state`,
+    });
+    return yield* phase(auth, "succeeded");
+  });
+
+  it.live("adds an account by signing in inside a scratch folder", () =>
+    Effect.gen(function* () {
+      const seen: { scratch?: string; login?: string; removed?: boolean } = {};
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const { auth, calls } = yield* harness({}, (directory) => ({
+        accounts: scratchAccounts(fileSystem, path, directory, seen, {
+          supported: true,
+          activeId: null,
+        }),
+      }));
+      const done = yield* signInThroughBrowser(auth, "account:add");
+      assert.strictEqual(done.message, "Added Max 20x.");
+      assert.include(seen.login ?? "", "acct");
+      assert.isTrue(seen.removed);
+      assert.deepStrictEqual((yield* calls).trim().split("\n"), ["auth login --claudeai"]);
+    }).pipe(Effect.scoped, Effect.provide(services)),
+  );
+
+  it.live("a plain sign-in beside an account in use adds it, keeping the active login", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const seen: { scratch?: string; login?: string; removed?: boolean } = {};
+      const { auth } = yield* harness({}, (directory) => ({
+        accounts: scratchAccounts(fileSystem, path, directory, seen, {
+          supported: true,
+          activeId: "acct-a.org-a",
+        }),
+      }));
+      const done = yield* signInThroughBrowser(auth, undefined);
+      assert.strictEqual(done.message, "Added Max 20x.");
+      assert.isDefined(seen.scratch);
+    }).pipe(Effect.scoped, Effect.provide(services)),
+  );
+
+  it.live("where accounts can't switch, adding one is the plain sign-in", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const seen: { scratch?: string; login?: string; removed?: boolean } = {};
+      const { auth } = yield* harness({}, (directory) => ({
+        accounts: scratchAccounts(fileSystem, path, directory, seen, {
+          supported: false,
+          activeId: null,
+        }),
+      }));
+      yield* signInThroughBrowser(auth, "account:add");
+      assert.isUndefined(seen.scratch);
+    }).pipe(Effect.scoped, Effect.provide(services)),
+  );
+
+  it.live("refuses sign-ins for a folder another provider owns, and unknown account ids", () =>
+    Effect.gen(function* () {
+      const taken = yield* harness({}, () => ({ folderTaken: true }));
+      yield* taken.auth.start(owner, undefined, undefined);
+      assert.include(
+        (yield* phase(taken.auth, "failed")).message ?? "",
+        "Another Claude provider already uses this folder",
+      );
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const seen = {};
+      const { auth } = yield* harness({}, (directory) => ({
+        accounts: scratchAccounts(fileSystem, path, directory, seen, {
+          supported: true,
+          activeId: null,
+        }),
+      }));
+      yield* auth.start(owner, undefined, "account:renew:");
+      assert.include((yield* phase(auth, "failed")).message ?? "", "Choose the account");
     }).pipe(Effect.scoped, Effect.provide(services)),
   );
 });

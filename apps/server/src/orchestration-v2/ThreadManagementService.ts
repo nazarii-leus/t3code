@@ -38,6 +38,7 @@ import {
   ProviderInstanceId,
   type ProviderSessionId,
   resolveProjectProviderInstanceEnabled,
+  resolveProviderInstanceAlias,
   RunId,
   type ScheduledTaskId,
   ThreadId,
@@ -45,7 +46,7 @@ import {
 } from "@t3tools/contracts";
 import { delegatedTaskProgress } from "@t3tools/provider-core/server/subagentProjection";
 import { threadTranscriptHeader } from "@t3tools/shared/threadTranscript";
-import { resolveLimitSwitchForNewTurn } from "@t3tools/shared/usageLimits";
+import { exhaustedUsageWindow, resolveLimitSwitchForNewTurn } from "@t3tools/shared/usageLimits";
 import { AgentScope } from "@t3tools/shared/AgentScope";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -70,6 +71,7 @@ import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
 import { DispatchModeLimit, exceededDispatchModeLimit } from "./DispatchModeLimit.ts";
 import { projectTurnItemForDetail } from "./WireProjection.ts";
 import * as LegacyV1ThreadImporter from "./legacy/LegacyV1ThreadImporter.ts";
+import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { ThreadWorktreeRestore } from "../workspace/restoreMissingWorktree.ts";
@@ -617,6 +619,9 @@ const make = Effect.gen(function* () {
   const serverSettings = yield* ServerSettings.ServerSettingsService;
   // Optional so the many narrow test layers of this service need no registry; the server has one.
   const providerRegistry = yield* Effect.serviceOption(ProviderRegistry.ProviderRegistry);
+  const providerInstances = yield* Effect.serviceOption(
+    ProviderInstanceRegistry.ProviderInstanceRegistry,
+  );
   const receipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
   const worktreeRestore = yield* ThreadWorktreeRestore;
 
@@ -630,7 +635,11 @@ const make = Effect.gen(function* () {
             : serverSettings.getSettings.pipe(
                 Effect.orDie,
                 Effect.flatMap((current) =>
-                  resolveProjectProviderInstanceEnabled(current, input.projectId, input.instanceId)
+                  resolveProjectProviderInstanceEnabled(
+                    current,
+                    input.projectId,
+                    current.providerInstanceAliases[input.instanceId] ?? input.instanceId,
+                  )
                     ? Effect.void
                     : new ThreadManagementProviderInstanceDisabledError({
                         projectId: input.projectId,
@@ -838,12 +847,39 @@ const make = Effect.gen(function* () {
     });
     if (runs.length > 0) return command;
     const selection = command.modelSelection ?? thread.modelSelection;
+    const providers = yield* providerRegistry.value.getProviders;
+    const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
+    // A thread of a folded account instance runs on the instance its id now names.
+    const instanceId = resolveProviderInstanceAlias(settings, selection.instanceId);
+    const provider = providers.find((candidate) => candidate.instanceId === instanceId);
+    // A provider that switches accounts in one folder (Claude) moves its login, not the thread.
+    if (provider?.accounts?.supported === true) {
+      const exhausted = exhaustedUsageWindow(provider, nowMs, selection.model);
+      const accounts = Option.isSome(providerInstances)
+        ? (yield* providerInstances.value.getInstance(instanceId))?.accounts
+        : undefined;
+      if (exhausted && accounts) {
+        const names = yield* accounts.switchForLimit({
+          // The reading's time: a switch made since (another turn waited for it) is then seen.
+          failedAt: DateTime.formatIso(DateTime.makeUnsafe(nowMs)),
+          windowId: exhausted.id,
+          windowLabel: exhausted.label,
+          resetAt: exhausted.resetsAt ?? null,
+          modelsInUse: [selection.model],
+        });
+        yield* Effect.logInfo("orchestration-v2.limit-switch.account", {
+          threadId: command.threadId,
+          switched: names !== undefined,
+        });
+      }
+      return command;
+    }
     const switched = resolveLimitSwitchForNewTurn({
       selection,
-      providers: yield* providerRegistry.value.getProviders,
+      providers,
       settings,
       projectId: thread.projectId,
-      now: DateTime.toEpochMillis(yield* DateTime.now),
+      now: nowMs,
     });
     if (switched === null) return command;
     yield* Effect.logInfo("orchestration-v2.limit-switch.rerouted", {

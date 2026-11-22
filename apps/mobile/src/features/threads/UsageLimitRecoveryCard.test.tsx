@@ -39,6 +39,9 @@ vi.mock("../../state/server", () => ({
 }));
 vi.mock("@effect/atom-react", () => ({ useAtomValue: () => undefined }));
 vi.mock("../../state/use-atom-command", () => ({ useAtomCommand: () => vi.fn() }));
+vi.mock("../settings/useClaudeAccountSwitch", () => ({
+  useClaudeAccountSwitch: () => ({ requestSwitch: vi.fn(), workingThreads: () => 0 }),
+}));
 
 import { UsageLimitRecoveryCard } from "./UsageLimitRecoveryCard";
 

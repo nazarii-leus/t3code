@@ -2,6 +2,7 @@ import {
   CommandId,
   MessageId,
   PROVIDER_DISPLAY_NAMES,
+  resolveProviderInstanceAlias,
   type OrchestrationV2Command,
   type ProviderDriverKind,
   type ProviderInstanceId,
@@ -12,8 +13,10 @@ import { resolveLimitSwitchSelection } from "@t3tools/shared/usageLimits";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 import type { OrchestrationV2DomainEvent } from "@t3tools/contracts";
+import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as DueHint from "../scheduling/DueHint.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
@@ -89,14 +92,13 @@ export function limitRecoveryCommand(
   };
 }
 
-/** Continues a limited thread at once on another account of its provider that has usage left. */
-export function limitSwitchCommand(
+/** A limited thread the automatic switch may continue on another account right now. */
+function limitSwitchEligible(
   thread: ProjectionStore.ProjectionLimitSwitchCandidate,
-  providers: ReadonlyArray<ServerProvider>,
   settings: ServerSettingsValue,
   nowMs: number,
-): OrchestrationV2Command | null {
-  if (
+): boolean {
+  return !(
     !settings.switchAccountsAtUsageLimits ||
     thread.status !== "failed" ||
     thread.lastErrorClass !== "usage_limit" ||
@@ -110,8 +112,46 @@ export function limitSwitchCommand(
     thread.pendingRuntimeRequest !== null ||
     (thread.snoozedUntil != null && DateTime.toEpochMillis(thread.snoozedUntil) > nowMs) ||
     Orchestrator.userChoseLimitRecovery(thread.limitRecovery, thread.latestRunId)
-  )
-    return null;
+  );
+}
+
+/** Continues a limited thread on the account the provider just switched to (one folder). */
+export function accountSwitchCommand(
+  thread: ProjectionStore.ProjectionLimitSwitchCandidate,
+  names: { readonly fromName: string; readonly toName: string },
+): OrchestrationV2Command | null {
+  if (!thread.latestRunId) return null;
+  const text = "Continue where you left off.";
+  const identity = `${thread.id}:${thread.latestRunId}`;
+  return {
+    type: "message.dispatch",
+    commandId: CommandId.make(`limit-switch:${identity}`),
+    messageId: MessageId.make(`limit-switch:${identity}`),
+    threadId: thread.id,
+    usageLimitContinuationOfRunId: thread.latestRunId,
+    usageLimitSwitchedAccount: true,
+    text,
+    notification: {
+      source: { kind: "system" },
+      outcome: "updated",
+      summary: `${names.fromName} ran out of usage. Continuing on ${names.toName}.`,
+      detail: text,
+    },
+    attachments: [],
+    dispatchMode: { type: "start_immediately" },
+    createdBy: "agent",
+    creationSource: "server",
+  };
+}
+
+/** Continues a limited thread at once on another account of its provider that has usage left. */
+export function limitSwitchCommand(
+  thread: ProjectionStore.ProjectionLimitSwitchCandidate,
+  providers: ReadonlyArray<ServerProvider>,
+  settings: ServerSettingsValue,
+  nowMs: number,
+): OrchestrationV2Command | null {
+  if (!thread.latestRunId || !limitSwitchEligible(thread, settings, nowMs)) return null;
   const selection = resolveLimitSwitchSelection({
     selection: thread.modelSelection,
     providers,
@@ -164,6 +204,35 @@ const makeSweep = Effect.gen(function* () {
   const orchestrator = yield* Orchestrator.OrchestratorV2;
   const settings = yield* ServerSettings.ServerSettingsService;
   const registry = yield* ProviderRegistry.ProviderRegistry;
+  const instances = yield* Effect.serviceOption(ProviderInstanceRegistry.ProviderInstanceRegistry);
+  // A provider that switches accounts in one folder (Claude) decides the switch itself.
+  const accountSwitch = Effect.fn("UsageLimitRecoveryWorker.accountSwitch")(function* (
+    thread: ProjectionStore.ProjectionLimitSwitchCandidate,
+    providers: ReadonlyArray<ServerProvider>,
+    preferences: ServerSettingsValue,
+    nowMs: number,
+  ) {
+    // A thread of a folded account instance runs on the instance its id now names.
+    const instanceId = resolveProviderInstanceAlias(preferences, thread.modelSelection.instanceId);
+    if (
+      Option.isNone(instances) ||
+      providers.find((provider) => provider.instanceId === instanceId)?.accounts?.supported !==
+        true ||
+      !limitSwitchEligible(thread, preferences, nowMs)
+    ) {
+      return undefined;
+    }
+    const accounts = (yield* instances.value.getInstance(instanceId))?.accounts;
+    if (!accounts) return undefined;
+    const names = yield* accounts.switchForLimit({
+      failedAt: DateTime.formatIso(thread.latestRunCompletedAt ?? thread.updatedAt),
+      windowId: null,
+      windowLabel: null,
+      resetAt: thread.usageLimitResetAt ?? null,
+      modelsInUse: [thread.modelSelection.model],
+    });
+    return names ? (accountSwitchCommand(thread, names) ?? undefined) : null;
+  });
   const due = DueHint.make();
   yield* forkParked(
     Stream.runForEach(orchestrator.streamDomainEvents, (event) =>
@@ -188,8 +257,10 @@ const makeSweep = Effect.gen(function* () {
     const providers = candidates.length === 0 ? [] : yield* registry.getProviders;
     let acted = false;
     for (const thread of candidates) {
+      const switched = yield* accountSwitch(thread, providers, preferences, nowMs);
       const command =
-        limitSwitchCommand(thread, providers, preferences, nowMs) ??
+        switched ??
+        (switched === null ? null : limitSwitchCommand(thread, providers, preferences, nowMs)) ??
         limitRecoveryCommand(
           thread,
           preferences.autoResumeLimitedThreads,

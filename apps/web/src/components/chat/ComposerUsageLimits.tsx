@@ -3,9 +3,12 @@ import type { TimestampFormat } from "@t3tools/contracts/settings";
 import { limitsNotice } from "@t3tools/shared/usageLimitsCopy";
 import { msg, T, useGT, useMessages } from "gt-react";
 import { GaugeIcon } from "lucide-react";
+import { useAtomValue } from "@effect/atom-react";
 
 import { m, type MessageResolver } from "../../i18n/messages";
 import { ensureLocalApi } from "../../localApi";
+import { serverEnvironment } from "../../state/server";
+import { useAccountSwitch } from "../settings/claude/useAccountSwitch";
 import { formatUpcomingTimestamp } from "../../timestampFormat";
 import { Button } from "../ui/button";
 import { providerClients } from "../settings/providerDriverMeta";
@@ -15,7 +18,7 @@ import { ComposerBanner } from "./ComposerBanner";
 import type { ComposerBannerStackItem } from "./ComposerBannerStack";
 
 function accountLabel(account: UsageLimitsReport["accounts"][number]): string {
-  if (!account.instanceId) return account.label;
+  if (!account.instanceId || account.providerAccount) return account.label;
   const driver = providerClients.get(account.driver)?.label ?? String(account.driver);
   const instance =
     account.displayName?.trim() ||
@@ -43,6 +46,7 @@ function AccountSummary({ account }: { readonly account: UsageLimitsReport["acco
         label
       )}
       {account.plan ? ` · ${account.plan}` : null}
+      {account.providerAccount?.active ? ` · ${gt("Active")}` : null}
     </>
   );
 }
@@ -130,6 +134,7 @@ export function limitSwitchBannerItem(
   {
     fromName,
     toName,
+    providerName,
     resetsAt,
     automatic,
     timestampFormat,
@@ -138,6 +143,8 @@ export function limitSwitchBannerItem(
   }: {
     readonly fromName: string;
     readonly toName: string;
+    /** Set when the provider switches its account in place (Claude); the texts then name it. */
+    readonly providerName?: string;
     readonly resetsAt: string | null;
     /** The server moves the next message itself; otherwise offer the switch. */
     readonly automatic: boolean;
@@ -161,18 +168,78 @@ export function limitSwitchBannerItem(
     icon: <GaugeIcon />,
     ...(automatic
       ? {
-          title: resolve(msg("Next message runs on {account}", { account: toName })),
+          title: providerName
+            ? resolve(
+                msg("Next message switches {provider} to {account}", {
+                  provider: providerName,
+                  account: toName,
+                }),
+              )
+            : resolve(msg("Next message runs on {account}", { account: toName })),
           description: outOfUsage,
         }
       : {
           title: outOfUsage,
           actions: (
             <Button size="xs" variant="ghost" onClick={onSwitch}>
-              {resolve(msg("Switch to {account}", { account: toName }))}
+              {providerName
+                ? resolve(
+                    msg("Switch {provider} to {account}", {
+                      provider: providerName,
+                      account: toName,
+                    }),
+                  )
+                : resolve(msg("Switch to {account}", { account: toName }))}
             </Button>
           ),
         }),
     dismissLabel: resolve(msg("Dismiss usage limit notice")),
+    onDismiss,
+  };
+}
+
+/** The composer's model is one the provider's active account can't run. */
+export function accountModelUnavailableBannerItem(
+  {
+    modelName,
+    accountName,
+    providerName,
+    switchToName,
+    onSwitch,
+    onChooseModel,
+    onDismiss,
+  }: {
+    readonly modelName: string;
+    readonly accountName: string;
+    readonly providerName: string;
+    /** Another ready account that offers the model, if any. */
+    readonly switchToName: string | null;
+    readonly onSwitch: () => void;
+    readonly onChooseModel: () => void;
+    readonly onDismiss: () => void;
+  },
+  resolve: MessageResolver = m,
+): ComposerBannerStackItem {
+  return {
+    id: "account-model-unavailable",
+    variant: "warning",
+    icon: <GaugeIcon />,
+    title: resolve(
+      msg("{model} isn't available on {account}", { model: modelName, account: accountName }),
+    ),
+    actions: (
+      <Button size="xs" variant="ghost" onClick={switchToName ? onSwitch : onChooseModel}>
+        {switchToName
+          ? resolve(
+              msg("Switch {provider} to {account}", {
+                provider: providerName,
+                account: switchToName,
+              }),
+            )
+          : resolve(msg("Choose another model"))}
+      </Button>
+    ),
+    dismissLabel: resolve(msg("Dismiss model notice")),
     onDismiss,
   };
 }
@@ -186,10 +253,25 @@ function UsageLimitsBannerBody({
 }) {
   const messages = useMessages();
   const now = Date.parse(report.createdAt);
+  const providers = useAtomValue(serverEnvironment.providersValueAtom(environmentId));
+  // One instance switches accounts in place; its accounts are Use targets.
+  const switchProvider = providers?.find((provider) =>
+    report.accounts.some(
+      (account) => account.providerAccount && account.instanceId === provider.instanceId,
+    ),
+  );
+  const accountSwitch = useAccountSwitch();
   return (
     <ComposerBanner.Scroll>
+      {accountSwitch.dialog}
       <ComposerBanner.Body className="flex flex-col gap-2 pt-1 pb-1.5 pe-2">
         {report.accounts.map((account) => {
+          const switchAccount = (entry: typeof account) =>
+            entry.providerAccount && !entry.providerAccount.active && entry.providerAccount.ready
+              ? switchProvider?.accounts?.accounts.find(
+                  (candidate) => candidate.id === entry.providerAccount?.id,
+                )
+              : undefined;
           const resetCreditInput =
             account.resetCreditInput ??
             (account.instanceId ? { instanceId: account.instanceId } : undefined);
@@ -198,8 +280,30 @@ function UsageLimitsBannerBody({
           return (
             <div key={account.id} className="flex min-w-0 flex-col gap-1">
               {report.accounts.length > 1 ? (
-                <span className="truncate text-xs text-muted-foreground">
-                  <AccountSummary account={account} />
+                <span className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
+                  <span className="truncate">
+                    <AccountSummary account={account} />
+                  </span>
+                  {switchAccount(account) ? (
+                    <Button
+                      size="xs"
+                      variant="outline"
+                      className="ms-auto"
+                      disabled={switchProvider?.accounts?.switching != null}
+                      onClick={() => {
+                        const target = switchAccount(account);
+                        if (target && switchProvider) {
+                          accountSwitch.requestUse({
+                            environmentId,
+                            provider: switchProvider,
+                            account: target,
+                          });
+                        }
+                      }}
+                    >
+                      {messages(msg("Use"))}
+                    </Button>
+                  ) : null}
                 </span>
               ) : null}
               {notice ? (

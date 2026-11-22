@@ -800,31 +800,9 @@ export const ClaudeSettings = makeProviderSettingsSchema(
     homePath: TrimmedString.pipe(
       Schema.withDecodingDefault(Effect.succeed("")),
       Schema.annotateKey({
-        title: "CLAUDE_CONFIG_DIR path",
-        description:
-          "Custom Claude home and config directory. Keeps .claude.json and .claude separate.",
+        title: "Claude folder",
+        description: "All accounts of this provider use this folder. Empty means ~/.claude.",
         providerSettingsForm: { placeholder: "~/.claude", clearWhenEmpty: "omit" },
-      }),
-    ),
-    shadowHomePath: TrimmedString.pipe(
-      Schema.withDecodingDefault(Effect.succeed("")),
-      Schema.annotateKey({
-        title: "Shadow home path",
-        description:
-          "Account-specific Claude home. Keeps the login separate while sharing settings, skills, plugins, MCP servers and chats from the CLAUDE_CONFIG_DIR path.",
-        providerSettingsForm: {
-          placeholder: "~/.claude-accounts/work",
-          clearWhenEmpty: "omit",
-        },
-      }),
-    ),
-    accountEmail: TrimmedString.pipe(
-      Schema.withDecodingDefault(Effect.succeed("")),
-      Schema.annotateKey({
-        title: "Account email",
-        description:
-          "Fills in Claude's sign-in page. T3 Code warns when a different account is signed in.",
-        providerSettingsForm: { placeholder: "you@example.com", clearWhenEmpty: "omit" },
       }),
     ),
     customModels: Schema.Array(CustomModelSetting).pipe(
@@ -871,15 +849,7 @@ export const ClaudeSettings = makeProviderSettingsSchema(
     ),
   },
   {
-    order: [
-      "binaryPath",
-      "homePath",
-      "shadowHomePath",
-      "accountEmail",
-      "autoCompactWindow",
-      "idleCompaction",
-      "launchArgs",
-    ],
+    order: ["binaryPath", "homePath", "autoCompactWindow", "idleCompaction", "launchArgs"],
   },
 );
 export type ClaudeSettings = typeof ClaudeSettings.Type;
@@ -1605,6 +1575,10 @@ export const ServerSettings = Schema.Struct({
   providerInstances: Schema.Record(ProviderInstanceId, ProviderInstanceConfig).pipe(
     Schema.withDecodingDefault(Effect.succeed({})),
   ),
+  /** Retired instance ids and the instance that now serves their threads. */
+  providerInstanceAliases: Schema.Record(ProviderInstanceId, ProviderInstanceId).pipe(
+    Schema.withDecodingDefault(Effect.succeed({})),
+  ),
   observability: ObservabilitySettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
   sourceControlHosts: Schema.Record(Schema.String, SourceControlHostSettings).pipe(
     Schema.withDecodingDefault(Effect.succeed({})),
@@ -1667,6 +1641,12 @@ export const isUnconfiguredDefaultInstanceEnabled = (instanceId: ProviderInstanc
 
 const defaultEnabledForDriver = (driver: ProviderDriverKind): boolean =>
   !DEFAULT_DISABLED_PROVIDER_DRIVERS.has(driver);
+
+/** The instance that now serves a retired instance id's threads, or the id itself. */
+export const resolveProviderInstanceAlias = (
+  settings: Pick<ServerSettings, "providerInstanceAliases"> | null | undefined,
+  instanceId: ProviderInstanceId,
+): ProviderInstanceId => settings?.providerInstanceAliases?.[instanceId] ?? instanceId;
 
 export const resolveProviderInstanceEnabled = (
   instance: Pick<ProviderInstanceConfig, "driver" | "enabled" | "config">,

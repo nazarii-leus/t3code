@@ -119,6 +119,12 @@ start run with target provider P
 
 The user message remains the actual run input. The handoff context is a separate preamble/system/developer/synthetic-user context depending on provider capability.
 
+An account switch inside one Claude instance is not a provider switch. The instance keeps one
+Claude folder and its conversations, so the next run resumes the same provider thread with no
+handoff; only the login under it changed. A usage-limit continuation on the same instance carries
+`usageLimitSwitchedAccount` so it is not held for the old account's reset. See
+[Claude accounts in one folder](../internals/claude-accounts.md).
+
 ## Strategy Selection
 
 Recommended strategy order:

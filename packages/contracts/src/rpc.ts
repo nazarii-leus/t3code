@@ -33,6 +33,26 @@ import {
   ChatGptHandoffInput,
   ChatGptHandoffState,
 } from "./providerSetup.ts";
+import {
+  ProviderAccountsAccountInput,
+  ProviderAccountsCheckUsageInput,
+  ProviderAccountsError,
+  ProviderAccountsInstanceInput,
+  ProviderAccountsRenameInput,
+  ProviderAccountsSetAutoSwitchInput,
+  ProviderAccountsSnapshot,
+  ProviderAccountsUseInput,
+} from "./providerAccounts.ts";
+import {
+  ProviderMcpCheckInput,
+  ProviderMcpError,
+  ProviderMcpSaveInput,
+  ProviderMcpServerConfigView,
+  ProviderMcpServerRefInput,
+  ProviderMcpSetEnabledInput,
+  ProviderMcpSnapshot,
+  ProviderMcpTarget,
+} from "./providerMcp.ts";
 import * as Schema from "effect/Schema";
 import * as Rpc from "effect/rpc/Rpc";
 import * as RpcGroup from "effect/rpc/RpcGroup";
@@ -478,6 +498,19 @@ export const WS_METHODS = {
   providerAuthRemoveMethod: "provider.auth.removeMethod",
   providerAuthLogout: "provider.auth.logout",
   providerAuthSubscribe: "provider.auth.subscribe",
+  providerAccountsUse: "provider.accounts.use",
+  providerAccountsRemove: "provider.accounts.remove",
+  providerAccountsRename: "provider.accounts.rename",
+  providerAccountsSetAutoSwitch: "provider.accounts.setAutoSwitch",
+  providerAccountsCheckUsage: "provider.accounts.checkUsage",
+  providerAccountsResumeAutoSwitch: "provider.accounts.resumeAutoSwitch",
+  providerMcpSubscribe: "provider.mcp.subscribe",
+  providerMcpCheck: "provider.mcp.check",
+  providerMcpGet: "provider.mcp.get",
+  providerMcpSave: "provider.mcp.save",
+  providerMcpRemove: "provider.mcp.remove",
+  providerMcpSetEnabled: "provider.mcp.setEnabled",
+  providerMcpReconnect: "provider.mcp.reconnect",
   providerInstallStart: "provider.install.start",
   providerInstallCancel: "provider.install.cancel",
   providerInstallSubscribe: "provider.install.subscribe",
@@ -805,6 +838,82 @@ const WsProviderAuthSubscribeRpc = Rpc.make(WS_METHODS.providerAuthSubscribe, {
   success: ProviderAuthState,
   error: ProviderSetupRpcError,
   stream: true,
+});
+
+const ProviderAccountsRpcError = Schema.Union([
+  ProviderAccountsError,
+  EnvironmentAuthorizationError,
+]);
+const WsProviderAccountsUseRpc = Rpc.make(WS_METHODS.providerAccountsUse, {
+  payload: ProviderAccountsUseInput,
+  success: ProviderAccountsSnapshot,
+  error: ProviderAccountsRpcError,
+});
+const WsProviderAccountsRemoveRpc = Rpc.make(WS_METHODS.providerAccountsRemove, {
+  payload: ProviderAccountsAccountInput,
+  success: ProviderAccountsSnapshot,
+  error: ProviderAccountsRpcError,
+});
+const WsProviderAccountsRenameRpc = Rpc.make(WS_METHODS.providerAccountsRename, {
+  payload: ProviderAccountsRenameInput,
+  success: ProviderAccountsSnapshot,
+  error: ProviderAccountsRpcError,
+});
+const WsProviderAccountsSetAutoSwitchRpc = Rpc.make(WS_METHODS.providerAccountsSetAutoSwitch, {
+  payload: ProviderAccountsSetAutoSwitchInput,
+  success: ProviderAccountsSnapshot,
+  error: ProviderAccountsRpcError,
+});
+const WsProviderAccountsCheckUsageRpc = Rpc.make(WS_METHODS.providerAccountsCheckUsage, {
+  payload: ProviderAccountsCheckUsageInput,
+  success: ProviderAccountsSnapshot,
+  error: ProviderAccountsRpcError,
+});
+const WsProviderAccountsResumeAutoSwitchRpc = Rpc.make(
+  WS_METHODS.providerAccountsResumeAutoSwitch,
+  {
+    payload: ProviderAccountsInstanceInput,
+    success: ProviderAccountsSnapshot,
+    error: ProviderAccountsRpcError,
+  },
+);
+
+const ProviderMcpRpcError = Schema.Union([ProviderMcpError, EnvironmentAuthorizationError]);
+const WsProviderMcpSubscribeRpc = Rpc.make(WS_METHODS.providerMcpSubscribe, {
+  payload: ProviderMcpTarget,
+  success: ProviderMcpSnapshot,
+  error: ProviderMcpRpcError,
+  stream: true,
+});
+const WsProviderMcpCheckRpc = Rpc.make(WS_METHODS.providerMcpCheck, {
+  payload: ProviderMcpCheckInput,
+  success: ProviderMcpSnapshot,
+  error: ProviderMcpRpcError,
+});
+const WsProviderMcpGetRpc = Rpc.make(WS_METHODS.providerMcpGet, {
+  payload: ProviderMcpServerRefInput,
+  success: ProviderMcpServerConfigView,
+  error: ProviderMcpRpcError,
+});
+const WsProviderMcpSaveRpc = Rpc.make(WS_METHODS.providerMcpSave, {
+  payload: ProviderMcpSaveInput,
+  success: ProviderMcpSnapshot,
+  error: ProviderMcpRpcError,
+});
+const WsProviderMcpRemoveRpc = Rpc.make(WS_METHODS.providerMcpRemove, {
+  payload: ProviderMcpServerRefInput,
+  success: ProviderMcpSnapshot,
+  error: ProviderMcpRpcError,
+});
+const WsProviderMcpSetEnabledRpc = Rpc.make(WS_METHODS.providerMcpSetEnabled, {
+  payload: ProviderMcpSetEnabledInput,
+  success: ProviderMcpSnapshot,
+  error: ProviderMcpRpcError,
+});
+const WsProviderMcpReconnectRpc = Rpc.make(WS_METHODS.providerMcpReconnect, {
+  payload: ProviderMcpServerRefInput,
+  success: Schema.Struct({ reconnected: Schema.Int }),
+  error: ProviderMcpRpcError,
 });
 
 const WsProviderInstallStartRpc = Rpc.make(WS_METHODS.providerInstallStart, {
@@ -2275,6 +2384,19 @@ export const WsRpcGroup = RpcGroup.make(
   WsProviderAuthRemoveMethodRpc,
   WsProviderAuthLogoutRpc,
   WsProviderAuthSubscribeRpc,
+  WsProviderAccountsUseRpc,
+  WsProviderAccountsRemoveRpc,
+  WsProviderAccountsRenameRpc,
+  WsProviderAccountsSetAutoSwitchRpc,
+  WsProviderAccountsCheckUsageRpc,
+  WsProviderAccountsResumeAutoSwitchRpc,
+  WsProviderMcpSubscribeRpc,
+  WsProviderMcpCheckRpc,
+  WsProviderMcpGetRpc,
+  WsProviderMcpSaveRpc,
+  WsProviderMcpRemoveRpc,
+  WsProviderMcpSetEnabledRpc,
+  WsProviderMcpReconnectRpc,
   WsProviderInstallStartRpc,
   WsProviderInstallCancelRpc,
   WsProviderInstallSubscribeRpc,

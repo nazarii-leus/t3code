@@ -21,6 +21,7 @@ import { startHostFreezeToasts } from "./components/HostFreezeToastCoordinator";
 import { startKeybindingsUpdateToasts } from "./components/KeybindingsUpdateToast";
 import { startLegacyThreadMigrationToast } from "./components/LegacyThreadMigrationToast";
 import { startPermissionUpdateNotices } from "./components/PermissionUpdateNotice";
+import { startProviderAccountSwitchToasts } from "./components/settings/claude/ProviderAccountSwitchToasts";
 import { startAgentOpenedPreviews } from "./components/preview/agentOpenedPreviews";
 import { startMainAppLocationTracking } from "./components/sidebar/mainAppLocation";
 import { startDesktopUpdateLaunchNotice } from "./components/sidebar/updateEverythingRun";
@@ -307,6 +308,7 @@ export function startAppServices(): AppRouter {
   startKeybindingsUpdateToasts();
   startSlowRpcRequestToasts();
   startHostFreezeToasts();
+  startProviderAccountSwitchToasts(router);
   startLegacyThreadMigrationToast();
   startPermissionUpdateNotices(router);
   startThreadNotifications(appAtomRegistry, router);

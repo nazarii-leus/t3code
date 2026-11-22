@@ -12,13 +12,17 @@ import {
   deriveAvailableInstanceId,
   deriveInstanceId,
 } from "@t3tools/client-runtime/provider-instance-ids";
-import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
+import {
+  isAtomCommandInterrupted,
+  squashAtomCommandFailure,
+} from "@t3tools/client-runtime/state/runtime";
 import type { ProviderClientDefinition } from "@t3tools/provider-core/client";
 import {
   type AcpRegistrySearchAgent,
   AuthProvidersManageScope,
   ProviderInstanceId,
   ProviderDriverKind,
+  PROVIDER_ACCOUNT_ADD_METHOD_ID,
   type EnvironmentId,
   type ProviderInstanceConfig,
   type ProviderInstanceEnvironmentVariable,
@@ -34,6 +38,7 @@ import { cn } from "../../lib/utils";
 import { normalizeProviderAccentColor } from "../../providerInstances";
 import { managedInstanceLocks, useManagedPolicy } from "../../state/managedPolicy";
 import { serverEnvironment } from "../../state/server";
+import { useAtomCommand } from "../../state/use-atom-command";
 import { readEnvironmentScope, useEnvironmentScope } from "../../state/session";
 import { Button } from "../ui/button";
 import { ChatGptConnectionButton } from "./ChatGptConnectionButton";
@@ -64,7 +69,6 @@ import { AcpRegistrySearchStep, useAcpRegistrySearch } from "./AcpRegistrySearch
 import { ProviderWizardAuthenticationStep } from "./ProviderWizardAuthenticationStep";
 import { resolveOfficialAcpRegistryIconUrl } from "./AcpRegistryIcon";
 import { AddManagedCodexAccountDialog } from "./CodexSetupSection";
-import { AddClaudeAccountDialog } from "./AddClaudeAccountDialog";
 import { MultipleAccountsNote } from "./MultipleAccountsNote";
 import { ProviderEnvironmentSection } from "./ProviderInstanceCard";
 import { useSecretSources } from "./SecretSourceInput";
@@ -175,12 +179,37 @@ export function AddProviderInstanceDialog({
 
   const [wizardStep, setWizardStep] = useState(0);
   const [addingChatGptAccount, setAddingChatGptAccount] = useState(false);
-  const [addingClaudeAccount, setAddingClaudeAccount] = useState(false);
-  // Windows servers cannot sign Claude in, so an account added here would stay signed out.
-  const claudeSignIn =
-    useAtomValue(serverEnvironment.providersValueAtom(environmentId))?.some(
-      (provider) => provider.driver === "claudeAgent" && provider.setup?.canAuthenticate,
-    ) ?? false;
+  // Claude accounts live in the Claude provider's account list; Windows servers cannot sign Claude in.
+  const claudeAccountsInstanceId =
+    useAtomValue(serverEnvironment.providersValueAtom(environmentId))?.find(
+      (provider) =>
+        provider.driver === "claudeAgent" &&
+        provider.accounts?.supported &&
+        provider.setup?.canAuthenticate,
+    )?.instanceId ?? null;
+  const startAuth = useAtomCommand(serverEnvironment.startProviderAuth, {
+    reportFailure: false,
+    reportDefect: false,
+  });
+  const addClaudeAccount = async (instanceId: ProviderInstanceId) => {
+    onOpenChange(false);
+    onCreated?.(instanceId, ProviderDriverKind.make("claudeAgent"));
+    const result = await startAuth({
+      environmentId,
+      input: { instanceId, methodId: PROVIDER_ACCOUNT_ADD_METHOD_ID },
+    });
+    if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+      const failure = squashAtomCommandFailure(result);
+      toastManager.add({
+        type: "error",
+        title: gt("Could not start sign-in"),
+        description:
+          failure instanceof Error
+            ? (thrownErrorMessage(failure, m) ?? failure.message)
+            : undefined,
+      });
+    }
+  };
   // Drivers the administrator's policy leaves out are not offered at all.
   const managedPolicy = useManagedPolicy(environmentId);
   const featuredDriverOptions = FEATURED_DRIVER_OPTIONS.filter((option) =>
@@ -222,7 +251,6 @@ export function AddProviderInstanceDialog({
   const showRegistrySearch =
     !createdInstanceId &&
     !addingChatGptAccount &&
-    !addingClaudeAccount &&
     wizardStep === 0 &&
     !(isAcpRegistry && isManualAcpConfiguration);
   // Searches while Show more is closed, so the fold opens on results.
@@ -457,17 +485,6 @@ export function AddProviderInstanceDialog({
         environmentId={environmentId}
         onClose={() => onOpenChange(false)}
         onAccountCreated={(instanceId) => onCreated?.(instanceId, ProviderDriverKind.make("codex"))}
-      />
-    );
-  }
-
-  if (addingClaudeAccount) {
-    return (
-      <AddClaudeAccountDialog
-        environmentId={environmentId}
-        environmentLabel={environmentLabel}
-        onClose={() => onOpenChange(false)}
-        onCreated={(instanceId) => onCreated?.(instanceId, ProviderDriverKind.make("claudeAgent"))}
       />
     );
   }
@@ -804,12 +821,12 @@ export function AddProviderInstanceDialog({
                     />
                   )}
                 </>
-              ) : wizardStep === 0 && driver === "claudeAgent" && claudeSignIn ? (
+              ) : wizardStep === 0 && driver === "claudeAgent" && claudeAccountsInstanceId ? (
                 <>
                   <Button variant="outline" size="sm" onClick={() => navigateToStep(1)}>
                     <T>Configure manually</T>
                   </Button>
-                  <Button size="sm" onClick={() => setAddingClaudeAccount(true)}>
+                  <Button size="sm" onClick={() => void addClaudeAccount(claudeAccountsInstanceId)}>
                     <T>Add Claude account</T>
                   </Button>
                 </>

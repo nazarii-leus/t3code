@@ -1880,6 +1880,13 @@ export function ThreadsSettingsPanel() {
       ? providersByEnvironment.get(environment.environmentId)
       : undefined) ?? EMPTY_SERVER_PROVIDERS;
   const limitSwitchGroups = limitSwitchAccountGroups(serverProviders);
+  const claudeAccountCount = Math.max(
+    0,
+    ...serverProviders.map(
+      (provider) =>
+        provider.accounts?.accounts.filter((account) => account.state === "ready").length ?? 0,
+    ),
+  );
   const supportsAutoSettlementScope = connectedEnvironments.every(
     (target) => target.serverConfig?.environment.capabilities.threadAutoSettlementScope === true,
   );
@@ -1999,20 +2006,33 @@ export function ThreadsSettingsPanel() {
           serverScoped
           {...setting("switch-accounts-at-usage-limits")}
           description={gt(
-            "Continue a thread on another signed-in account of the same provider when its account runs out of usage. With no account available, the thread waits for the reset.",
+            "Continue on another signed-in account when the current one runs out of usage. For Claude, every Claude thread moves to the new account; for other providers, only the stopped thread moves. With no account left, threads wait for the reset.",
           )}
           status={
             !environment?.serverConfig
               ? undefined
-              : limitSwitchGroups.length === 0
-                ? gt("Add a second signed-in account of a provider to switch between them.")
-                : gt("Switches between {accounts}.", {
-                    accounts: limitSwitchGroups
-                      .map((accounts) =>
-                        accounts.map(resolveProviderInstanceDisplayName).join(", "),
-                      )
-                      .join(" · "),
-                  })
+              : [
+                  ...(claudeAccountCount > 1
+                    ? [
+                        gt("Claude switches between {count} signed-in accounts.", {
+                          count: claudeAccountCount,
+                        }),
+                      ]
+                    : []),
+                  limitSwitchGroups.length === 0
+                    ? claudeAccountCount > 1
+                      ? null
+                      : gt("Add a second signed-in account of a provider to switch between them.")
+                    : gt("Switches between {accounts}.", {
+                        accounts: limitSwitchGroups
+                          .map((accounts) =>
+                            accounts.map(resolveProviderInstanceDisplayName).join(", "),
+                          )
+                          .join(" · "),
+                      }),
+                ]
+                  .filter(Boolean)
+                  .join(" ")
           }
           settingKeys={["switchAccountsAtUsageLimits"]}
           control={
